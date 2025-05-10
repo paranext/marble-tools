@@ -12,6 +12,13 @@ describe('transformDomainCode function', () => {
     expect(transformDomainCode('001042099')).toBe('1.42.99');
   });
 
+  test('should transform concatenated 3-digit with other characters in the middle', () => {
+    // Alphabetical characters
+    expect(transformDomainCode('001ABCDEFG002003')).toBe('2.3');
+    // HTML
+    expect(transformDomainCode('123&gt;456789')).toBe('456.789');
+  });
+
   // Test for edge cases
   test('should handle edge cases', () => {
     // Empty string

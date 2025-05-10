@@ -254,11 +254,18 @@ export function transformDomainCode(code: string): string {
   // Skip empty codes
   if (!code) return '';
 
+  // If there are non-digit characters, keep only digits to the right of the last non-digit
+  const lastNonDigitIndex = code.search(/\D(?=\d+$)/);
+  const digitsOnly =
+    lastNonDigitIndex !== -1
+      ? code.substring(lastNonDigitIndex + 1).replace(/\D/g, '')
+      : code.replace(/\D/g, '');
+
   // Split the code into chunks of 3 characters
   const chunks: string[] = [];
-  for (let i = 0; i < code.length; i += 3) {
-    if (i + 3 <= code.length) {
-      const chunk = code.substring(i, i + 3);
+  for (let i = 0; i < digitsOnly.length; i += 3) {
+    if (i + 3 <= digitsOnly.length) {
+      const chunk = digitsOnly.substring(i, i + 3);
       // Convert to number to remove leading zeros, then back to string
       chunks.push(parseInt(chunk, 10).toString());
     }
@@ -287,7 +294,7 @@ export function extractDefinitionAndGlosses(element: Element): {
     const glossElements = glossesElem.getElementsByTagName('Gloss');
     for (let j = 0; j < glossElements.length; j++) {
       const glossText = (glossElements[j].textContent || '').trim();
-      if (glossText) glosses.push(glossText);
+      if (glossText && !glosses.includes(glossText)) glosses.push(glossText);
     }
   }
 

@@ -19,6 +19,14 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "convert-sdbh"],
       "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "SQLite",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "import-to-sqlite"],
+      "skipFiles": ["<node_internals>/**"]
     }
   ]
 }

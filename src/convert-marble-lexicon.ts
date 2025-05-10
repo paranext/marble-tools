@@ -431,7 +431,19 @@ function processFile(
   function combineDomains(
     ...domainArrays: { code: string; value: string }[][]
   ): { code: string; value: string }[] | undefined {
-    const combined = domainArrays.flat().filter(domain => domain && domain.code);
+    // Flatten all domain arrays
+    const allDomains = domainArrays.flat().filter(domain => domain && domain.code);
+
+    // Use a Map to track unique domain codes (preserving the first occurrence)
+    const uniqueDomains = new Map<string, { code: string; value: string }>();
+
+    for (const domain of allDomains) {
+      if (!uniqueDomains.has(domain.code)) {
+        uniqueDomains.set(domain.code, domain);
+      }
+    }
+
+    const combined = Array.from(uniqueDomains.values());
     return combined.length > 0 ? combined : undefined;
   }
 

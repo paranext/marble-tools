@@ -1,105 +1,215 @@
-# **SEMANTIC DICTIONARY STRUCTURE**
+### **SEMANTIC DICTIONARIES \- STRUCTURE**
 
-The hierarchical structure of the semantic dictionaries (SD) consists of 4 different levels:
+The two UBS semantic dictionaries are available in both JSON and XML formats:
 
-* entries  
-* base forms  
-* lexical meanings  
-* contextual meanings
+- Semantic Dictionary of Biblical Hebrew (SDBH)
+- Semantic Dictionary of the Greek New Testament (SDBG or SDGNT)
 
-At the entry level, we find the following fields:
+There are four hierarchical levels in the data. Please take note of the following color coding:
 
-* **Lexicon\_Entry** \- main entry
+- Black: both lexicons
+- Blue: SDBH only
+- Green: SDBG/SDGNT only
+- Red: internal use only, unused or deprecated
 
-*Attributes*:
+These are all fields organized by hierarchic level:
 
-* **Id** \- a unique Id for each entry, which can be used for SDBG, but better to be ignored for SDBH until the lexicon is fully completed  
-  * **Lemma** \- the lemma or citation form for this entry, to be used to look up an entry  
-  * **Version** \- the version number (0-5) marking the level of completion of SDBH (3 \- lexical analysis completed; 5 \- contextual analysis completed); to be ignored for SDBG  
-  * **hasAramaic** \- a true/false value indicating whether this entry includes Aramaic data  
-  * **InLXX** \- SDBG only: a true/false value indicating whether this entry is found in the LXX corpus  
-  * **AlphaPos** \- ignore
+- **Lexicon_Entry**, containing the following fields:
 
-	*Elements*:
+  - Attributes:
 
-* **StrongCodes** \- one or more 4 digit Strong codes, preceded by a letter representing the language (H \- Hebrew; A \- Aramaic; G \- Greek)  
-* **Authors** \- the full names of the main authors of the article  
-* **Contributors** \- the full names of people who have contributed to this article by making substantial suggestions for improval that were implemented  
-* **AlternateLemmas** \- alternate forms of the lemma that are known from other lexical resources  
-* **MainLinks** \- links to other online lexical resources applying to the entire entry  
-* **Notes** \- notes to a particular entry; each note has a language code, caller, 14-digit reference code and content  
-* **Localizations** \- ignore  
-* **Dates** \- ignore  
-* **ContributorNotes** \- notes provided by contributors (see above)  
-* **BaseForms** \- the next level in the hierarchy; see below
+    - **Id** \- 6 digits representing the entry and 9 digits representing each level (base form index, lexical meaning index, contextual meaning index)
+    - **Lemma**
+    - **Version** \- use from version 3 only
+    - **HasAramaic** \- entry occurs in Aramaic
+    - **InLXX** \- entry is shared with LXX
+    - **AlphaPos**
 
-* **BaseForm** \- subentries with the same lemma, but with (as far as can be established) an unrelated meaning, such as homonyms and homographs.
+  - Arrays:
 
-*Attributes*:
+    - **AlternateLemmas** \- alternative lemma forms
+    - **StrongCodes \- Strong’s numbers, e.g. A0003, H0004, G0005**
+    - **Authors** \- name of main author of entry
+    - **Contributors** \- names of contributing authors
+    - **MainLinks \- links to articles pertaining to the entire entry**
+    - **Notes** (see below)
+    - **Localizations**
+    - **Dates**
+    - **BaseForms** (see below)
 
-* **Id** \- a unique Id for each base form, which can be used for Greek, but better to be ignored for Hebrew until the lexicon is fully completed
+  - Elements:
 
-	*Elements*:
+    - **ContributorNote**
 
-* **PartsOfSpeech** \- parts of speech are encoded, to make it easier to interpret localized editions, e.g. **nsfp** stands for noun, substantive, feminine, plural  
-* **Inflections** \- used in SDBG only, showing somewhat irregular inflected forms of the current lemma, e.g. ἄβυσσος has a genitive form ending in \-ου  
-* **Constructs** \- used in SDBG only, showing the different elements making up a particular lemma, e.g. ἀβαρής can be explained as a combination of the prefix ἀ- and βάρος; in some cases the meaning of each element is given  
-* **RelatedLemmas** \- lemmas (not including names) that are etymologically related to the main lemma  
-* **RelatedNames** \- names that are etymologically related to the main lemma  
-* **MeaningsOfName** \- possible translations of a name  
-* **BaseFormLinks** \- links to other online lexical resources applying to the current base form only  
-* **LEXMeanings** \- the next level in the hierarchy; see below
+- **BaseForm**
 
-* **LEXMeaning** \- lexical meaning
+  - Attributes:
 
-*Attributes*:
+    - **Id** \- 6 digits representing the entry and 9 digits representing each level (base form index, lexical meaning index, contextual meaning index)
 
-* **Id** \- a unique Id for each lexical meaning, which can be used for Greek, but better to be ignored for Hebrew until the lexicon is fully completed
+  - Arrays:
 
-	*Elements*:
+    - **PartsofSpeech** \- encoded parts of speech
+    - **Inflections** \- inflected or conjugated forms (see below)
+    - **Constructs** \- analysis of elements of which this lemma is made up (see below)
+    - **Etymologies**
+    - **RelatedLemmas** \- related lemmas, consisting of a word, and sometimes a meaning
+    - **RelatedNames** \- related names, consisting of a word, and sometimes a meaning
+    - **MeaningsOfName** \- meaning of Hebrew name
+    - **CrossReferences**
+    - **BaseFormLinks** \- links to articles pertaining this base form
+    - **LEXMeanings** (see below)
 
-* **LEXDomains** \- lexical semantic domain(s), with a semicolon as separator; a ‘\>’ is used to mark a mapping from one domain onto another.  
-* **LEXSubDomains** \- used in SDBG only: a lexical semantic subdomain, as used in Louw-Nida’s lexicon  
-* **LEXForms** \- encoded parts of speech featuring this lexical meaning,   
-* **LEXValencies** \- valency information for this lexical meaning, separated by a comma  
-* **LEXCollocations** \- specific collocations with this lexical meaning  
-* **LEXSynonyms** \- lemmas with similar lexical meanings, usually sharing the same lexical semantic domain   
-* **LEXAntonyms** \- lemmas with opposite lexical meanings  
-* **LEXCrossReferences** \- other related lemmas  
-* **LEXSenses** \- definition, gloss(es), and comments for the current lexical meaning; the long definition field is not in use  
-* **LEXIllustrations** \- only used in SDBG but not included in open access release: a Greek illustration accompanied by a translation  
-* **LEXReferences** \- all Scripture references, using 14-digit encoding marking book, chapter, verse, segment, and word (BBBCCCVVVSSWWW); the word index uses even numbers only  
-* **LEXLinks** \- links to entries in the Flora, Fauna, and Realia resources  
-* **LEXImages** \- links to images  
-* **LEXVideos** \- links to video clips  
-* **LEXCoordinates** \- geographic coordinates for names of locations  
-* **LEXCoreDomains** \- contextual semantic domains that apply to all Scripture references, with a semicolon as separator  
-* **CONMeanings** \- the next level in the hierarchy; see below
+- **LEXMeaning** \- lexical meaning
 
-* **CONMeaning** \- contextual meaning; not included in the open access release
+  - Attributes:
 
-*Attributes*:
+    - **Id** \- 6 digits representing the entry and 9 digits representing each level (base form index, lexical meaning index, contextual meaning index)
+    - **IsBiblicalTerm**
+    - **EntryCode**
+    - **Indent**
 
-* **Id** \- a unique Id for each contextual meaning, which can be used for Greek, but better to be ignored for Hebrew until the lexicon is fully completed
+  - Arrays:
 
-	*Elements*:
+    - **LEXDomains** \- lexical semantic domains (for details, see below)
+    - **LEXSubDomains** \- lexical semantic subdomains (for details, see below)
+    - **LEXForms** \- parts of speech representing this lexical meaning
+    - **LEXValencies** \- valency patterns
+    - **LEXCollocations** \- collocations
+    - **LEXSynonyms** \- synonymic forms
+    - **LEXAntonyms** \- antonymic forms
+    - **LEXCrossReferences**
+    - **LEXSenses** \- a range of senses; one for each localization
+    - **LEXIllustrations** \- see below
+    - **LEXReferences** \- 14-digit Scripture references (BBBCCCVVVSSWWW), which can carry notes {N:001}
+    - **LEXImages** \- links to images
+    - **LEXVideos** \- links to video clips
+    - **LEXCoordinates** \- geographical coordinates
+    - **LEXCoreDomains** \- contextual semantic domains relating to all references; for details, see below
+    - **CONMeanings** \- contextual meanings
 
-* **CONDomains** \- contextual semantic domain(s), with a semicolon as separator; a ‘\>’ is used to mark a mapping from one domain onto another.  
-* **CONForms** \- encoded parts of speech featuring this contextual meaning,   
-* **CONValencies** \- valency information for this contextual meaning, separated by a comma  
-* **CONCollocations** \- specific collocations with this contextual meaning  
-* **CONSynonyms** \- lemmas with similar contextual meanings, usually sharing the same lexical semantic domain   
-* **CONAntonyms** \- lemmas with opposite contextual meanings  
-* **CONCrossReferences** \- other related lemmas  
-* **CONSenses** \- definition, gloss(es), and comments for the current contextual meaning; only the gloss(es) field is in use at this level  
-* **CONLinks** \- links to entries in the Flora, Fauna, and Realia resources  
-* **CONImages** \- links to images  
-* **CONReferences** \- all Scripture references, using 14-digit encoding marking book, chapter, verse, segment, and word (BBBCCCVVVSSWW); the word index uses even numbers only
+- **CONMeaning** \- contextual meaning, mostly analogous to lexical meaning, tags starting with **CON** instead of **LEX**; one notable additional attribute:
 
-**Additional Encodings:**
+  - Attributes:
 
-**{N:001}** \- note caller  
-**{A:NIV}** \- abbreviation  
-**{D:001:033}** \- link to a entry code in SDBG  
-**{L:Abraham\<SDBH:אַבְרָהָם\>}** \- the word Abraham in the text is linked to lemma אַבְרָהָם in SDBH  
-**{S:00100200300010}** \- a link to Genesis 2:3, 5th element
+    - **Type** \- type of contextual meaning:
+
+      - **CON** \- regular contextual meaning, focus on contextual semantic domain
+      - **GRM** \- grammatical contextual meaning, focus on collocation
+      - **VAL** \- valency contextual meaning, focus on valency
+
+- **Note** \- footnotes, called with markers such as {N:001}
+
+  - Attributes:
+
+    - **Caller** \- number of note, corresponding to callers such as {N:001}
+    - **LanguageCode**
+    - **LastEdited**
+    - **LastEditedBy**
+
+  - Arrays:
+
+    - **References** \- 14-digit Scripture references (BBBCCCVVVSSWWW), which can carry notes, such as {N:001}
+
+  - Elements:
+
+    - **Content**
+
+- **Sense**
+
+  - Attributes:
+
+    - **LanguageCode**
+    - **LastEdited**
+    - **LastEditedBy**
+
+  - Elements
+
+    - **DefinitionLong**
+    - **DefinitionShort** \- can have embedded links, such as:
+      - **Abbreviation**, e.g. {A:NIV}
+      - **Domain**, e.g. {D:84.13}
+      - **Lexical**, e.g. {L:this entry\<SDBH:other entry\>}
+      - **Note**, e.g. {N:001}
+      - **Scripture**, e.g. {S:00100100100002 0020030000006}
+    - **Comments** \- with potentially same embedded links as above
+
+  - Arrays:
+
+    - **Glosses** \- can carry notes {N:001}
+
+- **Semantic Domain**
+
+  - Attributes:
+
+    - **Code** \- numeric code representing the domain
+    - **Source** \- source domain in an extension of meaning
+    - **SourceCode** \- numeric code of the above
+
+  - Text:
+
+    - **Domain** \- main semantic domain label
+
+  - Rendering:
+
+    - Some domains have a source domain attribute specified; if desired, the domain can be displayed as **Source \> Domain**, signifying that **Domain** is an extension of the meaning of **Source**.
+
+    - Some domain codes are prefixed by **001002** followed by a colon. This code represents the lexical semantic domain **Parts**.
+
+      e.g. **001002:001003** can be displayed as **Parts: Vegetation**
+
+    - Some domain codes contain a period at the beginning, the end, or in the middle. This is normally displayed as an **ellipsis**. Some examples:
+
+      **089.056** is displayed as **Human … Divine** (signifying that an event has a divine actor and is affecting humans)
+
+      **.089** is displayed as **…** **Human** (meaning that the event is affecting humans)
+
+      **.056** is displayed as **Divine …** (meaning that an event has a divine actor)
+
+    It is easy to consider all these details as unnecessary and superfluous. Note, however, that the primary value of these labels is that they make all these domains (and configurations of domains) searchable, to allow the user to do very meaningful searches. For example, a search for lexical domain **Speak** in combination with contextual domain configuration **Human \> Animal** would enable the user to locate passages like Balaam’s donkey speaking.
+
+    Details about semantic domains, including their localization data, can be found in **SDBH-DOMAINS1.XML** and **SDBG-DOMAINS1.XML** (lexical semantic domains) and **SDBH-DOMAINS2.XML** (contextual semantic domains).
+
+- **Inflection** \- inflected or conjugated form
+
+  - Attributes:
+
+    - **Lemma** \- identical to main entry lemma
+    - **BaseFormIndex** \- refers to index base form
+
+  - Arrays:
+
+    - **Realizations** \- actual surface form in Greek text (e.g. ἤγαγον)
+    - **Comments** \- with language code attribute
+
+  - Elements:
+
+    - **Form** \- abbreviated grammatical form (e.g. aor.)
+
+- **Construct** \- lemma consists of different elements
+
+  - Attributes:
+
+    - **Lemma** \- identical to main entry lemma
+    - **BaseFormIndex** \- refers to index base form
+
+  - Arrays:
+
+    - **WordMeaningSets** \- each consisting of a word element and (sometimes) an array of glosses
+
+- **Illustration** \- an example from the source text with
+
+- Attributes:
+
+  - **Lemma** \- identical to main entry lemma
+  - **EntryCode** \- refers the entry code of the Greek form
+  - **Source** \- e.g. apparatus
+
+- Arrays:
+
+  - **ILLReferences** \- 14-digit Scripture references (BBBCCCVVVSSWWW), which can carry notes {N:001}
+  - **ILLTranslations** \- an array of translations, each with a language code attribute and the translation as inner text
+
+- Elements:
+
+  - **ILLSourceText** \- (part of) a verse from the Greek source text featuring this lemma

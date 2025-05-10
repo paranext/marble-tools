@@ -1,4 +1,10 @@
+# Directories
 node_modules
+english
 output-sdbg
 output-sdbh
 dist
+
+# Files
+english.db
+lexicon.db

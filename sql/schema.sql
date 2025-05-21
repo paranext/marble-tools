@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS TaxonomyDomains (
   TaxonomyKey INTEGER NOT NULL,
   ParentTaxonomyDomainKey INTEGER,
   DomainCode TEXT NOT NULL,
-  UNIQUE (TaxonomyKey, ParentTaxonomyDomainKey, DomainCode),
+  UNIQUE (TaxonomyKey, DomainCode),
   FOREIGN KEY (TaxonomyKey) REFERENCES Taxonomies (TaxonomyKey),
   FOREIGN KEY (ParentTaxonomyDomainKey) REFERENCES TaxonomyDomains (TaxonomyDomainKey)
 );

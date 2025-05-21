@@ -1,7 +1,9 @@
+# Relax NG schema for Semantic Domain files in MARBLE
+# This file was included to help AI understand the structure of MARBLE domain files
+
 namespace xsi = "http://www.w3.org/2001/XMLSchema-instance"
 namespace xsd = "http://www.w3.org/2001/XMLSchema"
 
-# Relax NG schema for Semantic Domain files in MARBLE
 start = element Domains {
   attribute xmlns:xsi { text }?,
   attribute xmlns:xsd { text }?,

@@ -1,7 +1,9 @@
+# Relax NG schema for Lexical Reference Text files we create
+# This file was included to help AI to understand the structure of MARBLE domain files
+# This file may also be important to share with partners who want to contribute lexical data
+
 namespace rng = "http://relaxng.org/ns/structure/1.0"
 datatypes xsd = "http://www.w3.org/2001/XMLSchema-datatypes"
-
-# Relax NG schema for Lexical Reference Text files we create
 
 start = element LexicalReferenceText {
   attribute SchemaVersion { text },

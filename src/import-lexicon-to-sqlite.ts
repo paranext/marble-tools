@@ -56,6 +56,16 @@ function logError(error: unknown, context: string, details: Record<string, unkno
   }
 }
 
+// Helper function to find an immediate child element by name
+function findChildElementByName(parentElement: Element, name: string): Element | undefined {
+  for (let i = 0; i < parentElement.childNodes.length; i++) {
+    const node = parentElement.childNodes[i];
+    // Node.ELEMENT_NODE === 1, but it is only defined in an interface which disappears at runtime
+    if (node.nodeType === 1 && node.nodeName === name) return node as Element;
+  }
+  return undefined;
+}
+
 async function initializeDatabase(dbPath: string, schemaPath: string): Promise<Database> {
   // Delete existing db file if it exists
   if (fs.existsSync(dbPath)) {
@@ -373,12 +383,61 @@ async function processTaxonomy(
       'Get taxonomy key for processing taxonomy'
     );
 
-    // Process SubDomains recursively
+    // First collect all subdomains with their parents to process in the correct order
+    const domains: Array<{ element: Element; parentCode: string | null }> = [];
+    const collectDomains = (element: Element, parentCode: string | null) => {
+      const code = element.getAttribute('Code');
+      if (code) {
+        domains.push({ element, parentCode });
+      }
+      const childDomainsElement = element.getElementsByTagName('SubDomains')[0];
+      if (childDomainsElement) {
+        const children = childDomainsElement.getElementsByTagName('SubDomain');
+        for (let i = 0; i < children.length; i++) {
+          collectDomains(children[i], code);
+        }
+      }
+    };
+
     const subDomainsElement = taxonomyElement.getElementsByTagName('SubDomains')[0];
     if (subDomainsElement) {
       const subDomainElements = subDomainsElement.getElementsByTagName('SubDomain');
       for (let i = 0; i < subDomainElements.length; i++) {
-        await processSubDomain(subDomainElements[i], taxonomyKey, null, db, languageKey);
+        collectDomains(subDomainElements[i], null);
+      }
+    }
+
+    // Process domains in order - first process all domains, and their parents will be linked later
+    const processedDomainKeys = new Map<string, number>();
+
+    // First pass - create all domains and collect their keys
+    for (const domain of domains) {
+      const code = domain.element.getAttribute('Code');
+      if (!code) continue;
+
+      const key = await processSubDomain(domain.element, taxonomyKey, null, db, languageKey);
+      if (key !== undefined) {
+        processedDomainKeys.set(code, key);
+      }
+    }
+
+    // Second pass - update parent relationships
+    for (const domain of domains) {
+      if (!domain.parentCode) continue;
+
+      const code = domain.element.getAttribute('Code');
+      if (!code) continue;
+
+      const key = processedDomainKeys.get(code);
+      const parentKey = processedDomainKeys.get(domain.parentCode);
+
+      if (key !== undefined && parentKey !== undefined) {
+        await safeRun(
+          db,
+          'UPDATE TaxonomyDomains SET ParentTaxonomyDomainKey = ? WHERE TaxonomyDomainKey = ?',
+          [parentKey, key],
+          'Update taxonomy domain parent key'
+        );
       }
     }
   } catch (error: unknown) {
@@ -393,10 +452,11 @@ async function processTaxonomy(
 async function processSubDomain(
   subDomainElement: Element,
   taxonomyKey: number,
+  // null, not undefined, because we need to compare it with a value returned from the database
   parentDomainKey: number | null,
   db: Database,
   languageKey: number
-): Promise<void> {
+): Promise<number | undefined> {
   const domainCode = subDomainElement.getAttribute('Code');
   const domainName = subDomainElement.getAttribute('Name');
 
@@ -406,18 +466,40 @@ async function processSubDomain(
   }
 
   try {
-    // Insert the domain into TaxonomyDomains
-    const domainKey = await insertAndGetKey(
+    // First try to get existing domain key
+    const existingDomain = await safeGet(
       db,
-      'TaxonomyDomains',
-      'TaxonomyDomainKey',
-      {
-        TaxonomyKey: taxonomyKey,
-        ParentTaxonomyDomainKey: parentDomainKey,
-        DomainCode: domainCode,
-      },
-      'Get taxonomy domain key'
+      'SELECT TaxonomyDomainKey, ParentTaxonomyDomainKey FROM TaxonomyDomains WHERE TaxonomyKey = ? AND DomainCode = ?',
+      [taxonomyKey, domainCode],
+      'Get existing taxonomy domain'
     );
+
+    let domainKey: number;
+    if (existingDomain) {
+      domainKey = existingDomain.TaxonomyDomainKey;
+      // Update parent if different
+      if (existingDomain.ParentTaxonomyDomainKey !== parentDomainKey) {
+        await safeRun(
+          db,
+          'UPDATE TaxonomyDomains SET ParentTaxonomyDomainKey = ? WHERE TaxonomyDomainKey = ?',
+          [parentDomainKey, domainKey],
+          'Update taxonomy domain parent'
+        );
+      }
+    } else {
+      // Insert new domain if it doesn't exist
+      domainKey = await insertAndGetKey(
+        db,
+        'TaxonomyDomains',
+        'TaxonomyDomainKey',
+        {
+          TaxonomyKey: taxonomyKey,
+          ParentTaxonomyDomainKey: parentDomainKey,
+          DomainCode: domainCode,
+        },
+        'Insert new taxonomy domain'
+      );
+    }
 
     // If name is present, insert it into TaxonomyDomainLabels
     if (domainName) {
@@ -428,14 +510,7 @@ async function processSubDomain(
       });
     }
 
-    // Process child SubDomains recursively if present
-    const childSubDomainsElement = subDomainElement.getElementsByTagName('SubDomains')[0];
-    if (childSubDomainsElement) {
-      const childSubDomainElements = childSubDomainsElement.getElementsByTagName('SubDomain');
-      for (let i = 0; i < childSubDomainElements.length; i++) {
-        await processSubDomain(childSubDomainElements[i], taxonomyKey, domainKey, db, languageKey);
-      }
-    }
+    return domainKey;
   } catch (error: unknown) {
     console.error(
       `Error processing subdomain ${domainCode}:`,
@@ -469,8 +544,8 @@ async function processEntry(
       'Get entry key'
     );
 
-    // Process StrongsCodes if present
-    const strongsCodesElement = entryElement.getElementsByTagName('StrongsCodes')[0];
+    // Process entry-level StrongsCodes if present
+    const strongsCodesElement = findChildElementByName(entryElement, 'StrongsCodes');
     if (strongsCodesElement) {
       const strongsCodeElements = strongsCodesElement.getElementsByTagName('StrongsCode');
       for (let i = 0; i < strongsCodeElements.length; i++) {
@@ -482,7 +557,7 @@ async function processEntry(
     }
 
     // Process entry-level Occurrences if present
-    const entryOccurrencesElement = entryElement.getElementsByTagName('Occurrences')[0];
+    const entryOccurrencesElement = findChildElementByName(entryElement, 'Occurrences');
     if (entryOccurrencesElement) {
       await processOccurrences(
         entryOccurrencesElement,
@@ -495,7 +570,7 @@ async function processEntry(
     }
 
     // Process entry-level Domains if present
-    const entryDomainsElement = entryElement.getElementsByTagName('Domains')[0];
+    const entryDomainsElement = findChildElementByName(entryElement, 'Domains');
     if (entryDomainsElement) {
       await processDomains(
         entryDomainsElement,
@@ -508,7 +583,7 @@ async function processEntry(
     }
 
     // Process Senses if present
-    const sensesElement = entryElement.getElementsByTagName('Senses')[0];
+    const sensesElement = findChildElementByName(entryElement, 'Senses');
     if (sensesElement) {
       const senseElements = sensesElement.getElementsByTagName('Sense');
       for (let i = 0; i < senseElements.length; i++) {

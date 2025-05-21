@@ -11,6 +11,11 @@ export const DICTIONARY_TYPE = {
   HEBREW: 'SDBH',
 };
 
+export const SENSE_TYPE = {
+  LEXICAL: 'Lexical',
+  CONTEXTUAL: 'Contextual',
+};
+
 export const CORPUS_ID = {
   GREEK: 'UBSGNT5',
   HEBREW: 'UBSBHS4',
@@ -153,6 +158,134 @@ export const bookMap: Record<string, string> = {
   '123': 'LAO',
 };
 
+// Reverse mapping of book codes (3-letter abbreviation to book numbers)
+// This aligns with the bookMap but in reverse direction
+export const bookCodeToNumber: Record<string, number> = {
+  GEN: 1,
+  EXO: 2,
+  LEV: 3,
+  NUM: 4,
+  DEU: 5,
+  JOS: 6,
+  JDG: 7,
+  RUT: 8,
+  '1SA': 9,
+  '2SA': 10,
+  '1KI': 11,
+  '2KI': 12,
+  '1CH': 13,
+  '2CH': 14,
+  EZR: 15,
+  NEH: 16,
+  EST: 17,
+  JOB: 18,
+  PSA: 19,
+  PRO: 20,
+  ECC: 21,
+  SNG: 22,
+  ISA: 23,
+  JER: 24,
+  LAM: 25,
+  EZK: 26,
+  DAN: 27,
+  HOS: 28,
+  JOL: 29,
+  AMO: 30,
+  OBA: 31,
+  JON: 32,
+  MIC: 33,
+  NAM: 34,
+  HAB: 35,
+  ZEP: 36,
+  HAG: 37,
+  ZEC: 38,
+  MAL: 39,
+  MAT: 40,
+  MRK: 41,
+  LUK: 42,
+  JHN: 43,
+  ACT: 44,
+  ROM: 45,
+  '1CO': 46,
+  '2CO': 47,
+  GAL: 48,
+  EPH: 49,
+  PHP: 50,
+  COL: 51,
+  '1TH': 52,
+  '2TH': 53,
+  '1TI': 54,
+  '2TI': 55,
+  TIT: 56,
+  PHM: 57,
+  HEB: 58,
+  JAS: 59,
+  '1PE': 60,
+  '2PE': 61,
+  '1JN': 62,
+  '2JN': 63,
+  '3JN': 64,
+  JUD: 65,
+  REV: 66,
+  TOB: 67,
+  JDT: 68,
+  ESG: 69,
+  WIS: 70,
+  SIR: 71,
+  BAR: 72,
+  LJE: 73,
+  S3Y: 74,
+  SUS: 75,
+  BEL: 76,
+  '1MA': 77,
+  '2MA': 78,
+  '3MA': 79,
+  '4MA': 80,
+  '1ES': 81,
+  '2ES': 82,
+  MAN: 83,
+  PS2: 84,
+  ODA: 85,
+  PSS: 86,
+  JSA: 87,
+  JDB: 88,
+  TBS: 89,
+  SST: 90,
+  DNT: 91,
+  BLT: 92,
+  XXA: 93,
+  XXB: 94,
+  XXC: 95,
+  XXD: 96,
+  XXE: 97,
+  XXF: 98,
+  XXG: 99,
+  FRT: 100,
+  BAK: 101,
+  OTH: 102,
+  '3ES': 103,
+  EZA: 104,
+  '5EZ': 105,
+  '6EZ': 106,
+  INT: 107,
+  CNC: 108,
+  GLO: 109,
+  TDX: 110,
+  NDX: 111,
+  DAG: 112,
+  PS3: 113,
+  '2BA': 114,
+  LBA: 115,
+  JUB: 116,
+  ENO: 117,
+  '1MQ': 118,
+  '2MQ': 119,
+  '3MQ': 120,
+  REP: 121,
+  '4BA': 122,
+  LAO: 123,
+};
+
 /**
  * Condenses sense IDs that follow a hierarchical pattern.
  * Handles two types of patterns:
@@ -250,22 +383,65 @@ export function condenseSenseId(id: string): string {
  * Transform a domain code from concatenated 3-digit numbers to period-delimited values
  * For example: "001002003" becomes "1.2.3"
  */
-export function transformDomainCode(code: string): string {
+export function transformDomainCode(code: string): string[] {
   // Skip empty codes
-  if (!code) return '';
+  if (!code) return [];
+
+  // From Reinier: Some domain codes contain a period at the beginning, the end, or in the middle.
+  // This is normally displayed as an ellipsis.
+  // For example: 089.056 is displayed as Human … Divine (signifying that an event has a divine
+  // actor and is affecting humans)
+  //
+  // We are not doing this because we aren't trying to represent relationships between domains in
+  // the simple model we are using. Also it's not clear how we would even represent the specific
+  // ellipsis example in the UI for non-Latin scripts.
+  if (code.length === 7 && code[3] === '.') {
+    const code1 = code.substring(0, 3);
+    const code2 = code.substring(4, 7);
+    return [parseInt(code1, 10).toString(), parseInt(code2, 10).toString()];
+  }
+
+  // From Reinier: Some domain codes are prefixed by 001002 followed by a colon. This code
+  // represents the lexical semantic domain Parts.
+  // e.g. 001002:001003 can be displayed as Parts: Vegetation
+  //
+  // We are not doing this because we aren't trying to represent relationships between domains in
+  // the simple model we are using. We will just process the part after the colon.
+
+  // If there are non-digit characters, keeping only characters after the first non-digit
+  let updatedCode = code;
+  let foundFirstNonDigit = false;
+  for (let i = 0; i < code.length; i++) {
+    if (!code[i].match(/\d/)) {
+      foundFirstNonDigit = true;
+    } else if (foundFirstNonDigit) {
+      updatedCode = code.substring(i);
+      break;
+    }
+  }
+
+  // If there are no digits, return an empty array
+  const digitsOnly = updatedCode.replace(/\D/g, '');
+  if (!digitsOnly) return [];
+
+  // If the length is not a multiple of 3, return the original code
+  if (digitsOnly.length % 3 !== 0) {
+    console.warn(`Invalid domain code length: ${code}`);
+    return [code];
+  }
 
   // Split the code into chunks of 3 characters
   const chunks: string[] = [];
-  for (let i = 0; i < code.length; i += 3) {
-    if (i + 3 <= code.length) {
-      const chunk = code.substring(i, i + 3);
+  for (let i = 0; i < digitsOnly.length; i += 3) {
+    if (i + 3 <= digitsOnly.length) {
+      const chunk = digitsOnly.substring(i, i + 3);
       // Convert to number to remove leading zeros, then back to string
       chunks.push(parseInt(chunk, 10).toString());
     }
   }
 
   // Join the chunks with periods
-  return chunks.join('.');
+  return [chunks.join('.')];
 }
 
 /**
@@ -287,7 +463,7 @@ export function extractDefinitionAndGlosses(element: Element): {
     const glossElements = glossesElem.getElementsByTagName('Gloss');
     for (let j = 0; j < glossElements.length; j++) {
       const glossText = (glossElements[j].textContent || '').trim();
-      if (glossText) glosses.push(glossText);
+      if (glossText && !glosses.includes(glossText)) glosses.push(glossText);
     }
   }
 
@@ -322,4 +498,51 @@ export function marbleLinkIdToU23003(id: string): string {
   }
 
   return `${book} ${chapter}:${verse}!${word}`;
+}
+
+/**
+ * Gets the numeric book code for a given 3-letter book abbreviation.
+ * Used for efficient storage and indexing of scripture references.
+ *
+ * @param bookCode 3-letter book abbreviation (e.g., "GEN", "PSA", "MAT", "REV")
+ * @returns numeric book code (1-123)
+ */
+export function getBookNumber(bookCode: string): number {
+  // Check if the book code exists directly in our mapping
+  if (bookCodeToNumber[bookCode]) {
+    return bookCodeToNumber[bookCode];
+  }
+
+  // If not found, handle alternate book codes or non-standard books
+  // This ensures we always return a number even for unknown books
+  console.warn(`Unknown book code: ${bookCode}, using hash value instead`);
+  return bookCode.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+}
+
+/**
+ * Parses a U23003 format reference string (e.g., "ACT 7:22!7") into its component parts.
+ *
+ * @param reference Reference in U23003 format: "BookCode Chapter:Verse!Word"
+ * @returns Object containing parsed values or null if the reference is invalid
+ */
+export function parseU23003Reference(reference: string): {
+  bookNum: number;
+  chapterNum: number;
+  verseNum: number;
+  wordNum: number;
+} | null {
+  // Format is Book Chapter:Verse!WordPosition - e.g., "ACT 7:22!7" or "HEB 11:29!14"
+  const match = reference.match(/^(\w+)\s+(\d+):(\d+)!(\d+)$/);
+  if (!match) {
+    console.warn(`Invalid U23003 reference format: ${reference}`);
+    return null;
+  }
+
+  const bookCode = match[1]; // e.g. "ACT", "HEB"
+  const bookNum = getBookNumber(bookCode);
+  const chapterNum = parseInt(match[2], 10);
+  const verseNum = parseInt(match[3], 10);
+  const wordNum = parseInt(match[4], 10);
+
+  return { bookNum, chapterNum, verseNum, wordNum };
 }

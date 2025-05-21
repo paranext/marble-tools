@@ -8,6 +8,8 @@
  * The converter supports both SDBG (Greek) and SDBH (Hebrew) dictionaries and handles
  * various languages for each dictionary.
  *
+ * See https://docs.google.com/document/d/1sxYArR24YxjxJDd-r1talTlK3YGKpUNPMK24z8RU1Tg
+ *
  * NOTE: Most code in this file is AI generated. Some human adjustments were made.
  */
 
@@ -33,6 +35,12 @@ interface Occurrence {
   id: string; // U23003 formatted occurrence
 }
 
+interface Domain {
+  taxonomy: string;
+  code: string;
+  value: string;
+}
+
 interface Sense {
   id: string;
   baseFormIndex: number;
@@ -41,7 +49,7 @@ interface Sense {
   definition: string;
   glosses: string[];
   occurrences?: Occurrence[];
-  domains?: { code: string; value: string }[]; // Add domains property to store domain codes
+  domains?: Domain[];
 }
 
 interface Entry {
@@ -56,6 +64,32 @@ interface EntriesByLanguage {
   [language: string]: {
     [lemma: string]: Entry;
   };
+}
+
+// Domain taxonomy structures
+interface SubDomain {
+  code: string;
+  label: string;
+  subDomains?: SubDomain[];
+}
+
+interface Taxonomy {
+  id: string;
+  title: string;
+  subDomains: SubDomain[];
+}
+
+interface TaxonomiesByLanguage {
+  [language: string]: {
+    [taxonomyId: string]: Taxonomy;
+  };
+}
+
+function getTaxonomyId(
+  dictionaryType: 'SDBG' | 'SDBH',
+  senseType: 'Lexical' | 'Contextual'
+): string {
+  return `${dictionaryType}-${senseType}`;
 }
 
 /**
@@ -268,7 +302,7 @@ function removeEmptyEntriesAndSenses(entriesByLanguage: EntriesByLanguage): {
 function processLexiconFiles(
   inputDir: string,
   entriesByLanguage: EntriesByLanguage,
-  dictionaryType: string
+  dictionaryType: 'SDBG' | 'SDBH'
 ): void {
   // Dictionary to hold entries by language
   const files = fs.readdirSync(inputDir).filter(filename => {
@@ -304,7 +338,7 @@ function processLexiconFiles(
 function processFile(
   filePath: string,
   entriesByLanguage: EntriesByLanguage,
-  dictionaryType: string
+  dictionaryType: 'SDBG' | 'SDBH'
 ): void {
   const xmlContent = fs.readFileSync(filePath, 'utf8');
   const parser = new DOMParser();
@@ -324,12 +358,13 @@ function processFile(
   // Helper function to extract domain codes
   function extractDomains(
     container: Element,
+    taxonomy: string,
     domainTagName: string,
     childTagName: string,
     subDomainTagName?: string,
     subDomainChildTagName?: string
-  ): { code: string; value: string }[] {
-    const domains: { code: string; value: string }[] = [];
+  ): Domain[] {
+    const domains: Domain[] = [];
 
     // First check for subdomain elements if applicable
     if (subDomainTagName && subDomainChildTagName) {
@@ -340,21 +375,16 @@ function processFile(
         const subDomainElements = subDomainsElement.getElementsByTagName(subDomainChildTagName);
         for (let i = 0; i < subDomainElements.length; i++) {
           const domainElement = subDomainElements[i];
-          const code = domainElement.getAttribute('Code') || '';
+          const codes = transformDomainCode(domainElement.getAttribute('Code') || '');
           const value = getTextContent(domainElement).trim();
           // Skip empty codes
-          if (!code) {
+          if (!codes || codes.length === 0) {
             console.warn(
               `Empty ${subDomainChildTagName} code with value "${value}" for element ${container.getAttribute('Id')} in file ${path.basename(filePath)}`
             );
             continue;
           }
-
-          // Transform the code to period-delimited format
-          const transformedCode = transformDomainCode(code);
-          if (transformedCode) {
-            domains.push({ code: transformedCode, value });
-          }
+          codes.forEach(code => domains.push({ taxonomy, code, value }));
         }
 
         // If we found subdomains, return them and don't process regular domains
@@ -371,11 +401,10 @@ function processFile(
       const domainElements = domainsElement.getElementsByTagName(childTagName);
       for (let i = 0; i < domainElements.length; i++) {
         const domainElement = domainElements[i];
-        const code = domainElement.getAttribute('Code') || '';
+        const codes = transformDomainCode(domainElement.getAttribute('Code') || '');
         const value = getTextContent(domainElement).trim();
-
         // Skip empty codes
-        if (!code) {
+        if (!codes || codes.length === 0) {
           // From Reinier:  when a contextual domain field is ‘-‘ it means that the information
           // is grammatical rather than contextual. There is nothing wrong with a missing code.
           if (value === '-') continue;
@@ -385,12 +414,7 @@ function processFile(
           );
           continue;
         }
-
-        // Transform the code to period-delimited format
-        const transformedCode = transformDomainCode(code);
-        if (transformedCode) {
-          domains.push({ code: transformedCode, value });
-        }
+        codes.forEach(code => domains.push({ taxonomy, code, value }));
       }
     }
 
@@ -398,29 +422,24 @@ function processFile(
   }
 
   // Helper function to extract core domain codes
-  function extractCoreDomains(container: Element): { code: string; value: string }[] {
-    const domains: { code: string; value: string }[] = [];
+  function extractCoreDomains(container: Element, taxonomy: string): Domain[] {
+    const domains: Domain[] = [];
     const coreDomainsElement = container.getElementsByTagName('LEXCoreDomains')[0];
 
     if (coreDomainsElement) {
       const coreDomainElements = coreDomainsElement.getElementsByTagName('LEXCoreDomain');
       for (let i = 0; i < coreDomainElements.length; i++) {
         const domainElement = coreDomainElements[i];
-        const code = domainElement.getAttribute('Code') || '';
+        const codes = transformDomainCode(domainElement.getAttribute('Code') || '');
         const value = getTextContent(domainElement).trim();
         // Skip empty codes
-        if (!code) {
+        if (!codes || codes.length === 0) {
           console.warn(
             `Empty LEXCoreDomain code with value "${value}" for element ${container.getAttribute('Id')} in file ${path.basename(filePath)}`
           );
           continue;
         }
-
-        // Transform the code to period-delimited format
-        const transformedCode = transformDomainCode(code);
-        if (transformedCode) {
-          domains.push({ code: transformedCode, value });
-        }
+        codes.forEach(code => domains.push({ taxonomy, code, value }));
       }
     }
 
@@ -428,11 +447,77 @@ function processFile(
   }
 
   // Helper function to combine domains
-  function combineDomains(
-    ...domainArrays: { code: string; value: string }[][]
-  ): { code: string; value: string }[] | undefined {
-    const combined = domainArrays.flat().filter(domain => domain && domain.code);
+  function combineDomains(...domainArrays: Domain[][]): Domain[] | undefined {
+    // Flatten all domain arrays
+    const allDomains = domainArrays.flat().filter(domain => domain && domain.code);
+
+    // Use a Map to track unique domain codes and taxonomies (preserving the first occurrence)
+    const uniqueDomains = new Map<string, Domain>();
+
+    for (const domain of allDomains) {
+      if (!uniqueDomains.has(`${domain.taxonomy}${domain.code}`)) {
+        uniqueDomains.set(`${domain.taxonomy}${domain.code}`, domain);
+      }
+    }
+
+    const combined = Array.from(uniqueDomains.values());
     return combined.length > 0 ? combined : undefined;
+  }
+
+  // Helper function to extract CONReferences from a ContextualMeaning element
+  function extractCONReferences(conMeaning: Element): Occurrence[] {
+    const occurrences: Occurrence[] = [];
+    const conReferencesElement = conMeaning.getElementsByTagName('CONReferences')[0];
+
+    if (conReferencesElement) {
+      const conReferenceElements = conReferencesElement.getElementsByTagName('CONReference');
+      for (let i = 0; i < conReferenceElements.length; i++) {
+        // Ignore notes (e.g., {N:001}) at the end of reference IDs
+        const referenceId = getTextContent(conReferenceElements[i]).trim().substring(0, 14);
+
+        if (!referenceId || !/^\d{14}$/.test(referenceId)) {
+          console.warn(
+            `Invalid CONReference ID: "${referenceId}" in file ${path.basename(filePath)}`
+          );
+          continue;
+        }
+
+        // Check if the reference is an odd number (similar to MARBLELink processing)
+        if (!['0', '2', '4', '6', '8'].includes(referenceId[13])) {
+          console.warn(
+            `Odd CONReference ID (skipped): "${referenceId}" in file ${path.basename(filePath)}`
+          );
+          continue;
+        }
+
+        // Convert CONReference ID to U23003 reference format
+        const u23003Reference = marbleLinkIdToU23003(referenceId);
+        if (!u23003Reference) {
+          console.warn(
+            `Could not convert CONReference ID to U23003 format: "${referenceId}" in file ${path.basename(filePath)}`
+          );
+          continue;
+        }
+
+        occurrences.push({ id: u23003Reference });
+      }
+    }
+
+    // Remove any duplicate occurrences
+    const uniqueOccurrences = new Set(occurrences.map(occ => occ.id));
+    if (uniqueOccurrences.size !== occurrences.length) {
+      // Print out all the duplicates
+      const rawOccurrences = occurrences.map(occ => occ.id);
+      const duplicates = rawOccurrences.filter(
+        (occ, index) => rawOccurrences.indexOf(occ) !== index
+      );
+      console.warn(
+        `Duplicate CONReference IDs found in file ${path.basename(filePath)}: ${duplicates.join(', ')}`
+      );
+    }
+
+    // Return the unique occurrences
+    return Array.from(uniqueOccurrences).map(id => ({ id }));
   }
 
   // Process each lexicon entry
@@ -505,9 +590,14 @@ function processFile(
           continue;
         }
 
+        // Get the taxonomy IDs for later
+        const lexicalTaxonomyId = getTaxonomyId(dictionaryType, 'Lexical');
+        const contextualTaxonomyId = getTaxonomyId(dictionaryType, 'Contextual');
+
         // Extract LEXDomains from the LEXMeaning
         const lexDomains = extractDomains(
           lexMeaning,
+          lexicalTaxonomyId,
           'LEXDomains',
           'LEXDomain',
           'LEXSubDomains',
@@ -515,7 +605,7 @@ function processFile(
         );
 
         // Extract LEXCoreDomains from the LEXMeaning
-        const lexCoreDomains = extractCoreDomains(lexMeaning);
+        const lexCoreDomains = extractCoreDomains(lexMeaning, contextualTaxonomyId);
 
         // Process each LEXSense by language
         const lexSenses = findElements(lexMeaning, 'LEXSense');
@@ -586,7 +676,15 @@ function processFile(
             }
 
             // Extract CONDomains from the ContextualMeaning
-            const conDomains = extractDomains(conMeaning, 'CONDomains', 'CONDomain');
+            const conDomains = extractDomains(
+              conMeaning,
+              contextualTaxonomyId,
+              'CONDomains',
+              'CONDomain'
+            );
+
+            // Extract CONReferences from the ContextualMeaning
+            const conOccurrences = extractCONReferences(conMeaning);
 
             // Process each CONSense by language
             const conSenses = findElements(conMeaning, 'CONSense');
@@ -625,7 +723,7 @@ function processFile(
                 conIndex: cmIdx,
                 definition,
                 glosses,
-                occurrences: [],
+                occurrences: conOccurrences.length > 0 ? [...conOccurrences] : [],
                 domains: combineDomains(conDomains, lexCoreDomains),
               });
             }
@@ -639,11 +737,14 @@ function processFile(
 /**
  * Helper function to check if a link is for a different dictionary type
  */
-function isDictionaryTypeMismatch(linkText: string, expectedDictionaryType: string): boolean {
+function isDictionaryTypeMismatch(
+  linkText: string,
+  expectedDictionaryType: 'SDBG' | 'SDBH'
+): boolean {
   const parts = linkText.split(':');
   if (parts.length < 1) return false;
 
-  const linkDictionaryType = parts[0].toUpperCase(); // e.g., "SDBG" or "SDBH"
+  const linkDictionaryType = parts[0].toUpperCase();
   return linkDictionaryType !== expectedDictionaryType;
 }
 
@@ -653,7 +754,7 @@ function isDictionaryTypeMismatch(linkText: string, expectedDictionaryType: stri
 function processMarbleLinksFiles(
   marbleLinksDir: string,
   entriesByLanguage: EntriesByLanguage,
-  dictionaryType: string
+  dictionaryType: 'SDBG' | 'SDBH'
 ): void {
   // Find all XML files in the marble-indexes/Full directory
   const files = fs
@@ -736,7 +837,7 @@ function processMarbleLinksFiles(
 function processMarbleLinksFile(
   filePath: string,
   entriesByLanguage: EntriesByLanguage,
-  dictionaryType: string
+  dictionaryType: 'SDBG' | 'SDBH'
 ): {
   totalLinks: number;
   badLinks: number;
@@ -844,7 +945,7 @@ function processLexicalLink(
   linkText: string,
   reference: string,
   entriesByLanguage: EntriesByLanguage,
-  dictionaryType: string
+  dictionaryType: 'SDBG' | 'SDBH'
 ): boolean {
   // Split by colon
   const parts = linkText.split(':');
@@ -906,27 +1007,327 @@ function processLexicalLink(
 }
 
 /**
+ * Process domain XML files to build taxonomies.
+ */
+function processDomainFiles(
+  inputDir: string,
+  taxonomiesByLanguage: TaxonomiesByLanguage,
+  dictionaryType: 'SDBG' | 'SDBH'
+): void {
+  // Look for SDBG-DOMAINS*.XML or SDBH-DOMAINS*.XML files
+  const prefix = dictionaryType === DICTIONARY_TYPE.GREEK ? 'SDBG-DOMAINS' : 'SDBH-DOMAINS';
+  const files = fs
+    .readdirSync(inputDir)
+    .filter(filename => filename.toUpperCase().startsWith(prefix) && filename.endsWith('.XML'));
+
+  if (files.length === 0) {
+    console.warn(`No domain files found with prefix ${prefix} in ${inputDir}`);
+    return;
+  }
+
+  console.log(`Found ${files.length} domain files to process`);
+
+  for (const filename of files) {
+    const filePath = path.join(inputDir, filename);
+    try {
+      processDomainFile(filePath, dictionaryType, taxonomiesByLanguage);
+    } catch (e) {
+      console.error(`Error processing domain file ${filePath}: ${e}`);
+    }
+  }
+
+  console.log(
+    `Processed ${Object.keys(taxonomiesByLanguage).length} languages for domain taxonomies`
+  );
+}
+
+/**
+ * Process a single domain XML file to extract taxonomies by language.
+ */
+function processDomainFile(
+  filePath: string,
+  dictionaryType: 'SDBG' | 'SDBH',
+  taxonomiesByLanguage: TaxonomiesByLanguage
+): void {
+  // From Reinier: DOMAINS1.XML is for lexical domains and DOMAINS2.XML is for contextual domains
+  const senseType = filePath.includes('1') ? 'Lexical' : 'Contextual';
+
+  const xmlContent = fs.readFileSync(filePath, 'utf8');
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(xmlContent, 'text/xml');
+
+  // Get all semantic domains
+  const semanticDomains = doc.getElementsByTagName('SemanticDomain');
+  console.log(
+    `Found ${semanticDomains.length} semantic domains in ${path.basename(filePath)} for ${senseType} domains`
+  );
+
+  // Map to store domains by code
+  const domainsByCode: Record<string, Element> = {};
+  const domainsByLevel: Record<string, Element[]> = {};
+  const topLevelDomainCodes: string[] = [];
+
+  // First pass: collect all domains and organize them by level
+  for (let i = 0; i < semanticDomains.length; i++) {
+    const domain = semanticDomains[i] as Element;
+    const codeElement = domain.getElementsByTagName('Code')[0];
+
+    if (!codeElement) {
+      console.warn(`Semantic domain #${i} has no Code element in ${path.basename(filePath)}`);
+      continue;
+    }
+
+    const codes = transformDomainCode(codeElement.textContent || '');
+    if (!codes || codes.length === 0) {
+      console.warn(`Semantic domain #${i} has empty Code in ${path.basename(filePath)}`);
+      continue;
+    }
+
+    if (codes.length !== 1) {
+      console.warn(
+        `Semantic domain #${i} has multiple codes (${codes.join(', ')}) in ${path.basename(filePath)}`
+      );
+      continue;
+    }
+
+    const code = codes[0];
+    domainsByCode[code] = domain;
+
+    const levelElement = domain.getElementsByTagName('Level')[0];
+    const level = levelElement?.textContent || '0';
+
+    if (!domainsByLevel[level]) {
+      domainsByLevel[level] = [];
+    }
+
+    domainsByLevel[level].push(domain);
+
+    // Keep track of top-level domains (level 1)
+    if (level === '1') {
+      topLevelDomainCodes.push(code);
+    }
+  }
+
+  // Process for each language
+  const processedLanguages = new Set<string>();
+
+  // Identify all available languages across all domains
+  for (const code in domainsByCode) {
+    const domain = domainsByCode[code];
+    const localizationsElement = domain.getElementsByTagName('SemanticDomainLocalizations')[0];
+
+    if (!localizationsElement) {
+      continue;
+    }
+
+    const localizations = localizationsElement.getElementsByTagName('SemanticDomainLocalization');
+
+    for (let j = 0; j < localizations.length; j++) {
+      const localization = localizations[j] as Element;
+      const languageCode = localization.getAttribute('LanguageCode') || '';
+      if (languageCode) processedLanguages.add(languageCode);
+    }
+  }
+
+  // Build hierarchical taxonomies for each language
+  for (const languageCode of processedLanguages) {
+    // Initialize the language in taxonomiesByLanguage if not already done
+    if (!taxonomiesByLanguage[languageCode]) {
+      taxonomiesByLanguage[languageCode] = {};
+    }
+
+    // Generate a unique taxonomy ID for this dictionary type and sense type
+    const taxonomyId = getTaxonomyId(dictionaryType, senseType);
+
+    // Create a new taxonomy for this specific sense type (Lexical or Contextual)
+    taxonomiesByLanguage[languageCode][taxonomyId] = {
+      id: taxonomyId,
+      title: `${senseType} Semantic Domains for ${dictionaryType === DICTIONARY_TYPE.GREEK ? 'Greek' : 'Hebrew'}`,
+      subDomains: [],
+    };
+
+    // Build top-level domains first
+    for (const topLevelCode of topLevelDomainCodes) {
+      const domain = domainsByCode[topLevelCode];
+      const label = getLabelForLanguage(domain, languageCode);
+
+      // Create top-level subdomain
+      const subDomain: SubDomain = {
+        code: topLevelCode,
+        label,
+        subDomains: [],
+      };
+
+      // Build hierarchy for this top-level domain by recursively adding child domains
+      buildDomainHierarchy(subDomain, topLevelCode, languageCode, domainsByCode, 2);
+
+      // Add to taxonomy
+      taxonomiesByLanguage[languageCode][taxonomyId].subDomains.push(subDomain);
+    }
+  }
+
+  console.log(`Processed ${processedLanguages.size} languages for ${senseType} domain taxonomy`);
+
+  /**
+   * Recursively builds a domain hierarchy starting from a parent domain
+   */
+  function buildDomainHierarchy(
+    parentDomain: SubDomain,
+    parentCode: string,
+    languageCode: string,
+    domainsMap: Record<string, Element>,
+    currentLevel: number
+  ): void {
+    // Find all domains that start with the parent code and are at the current level
+    // For example, if parentCode is "001" and currentLevel is 2, find all codes like "001001", "001002", etc.
+    Object.keys(domainsMap)
+      .filter(code => {
+        // The code must start with parent code but not be the parent code itself
+        if (code === parentCode || !code.startsWith(`${parentCode}.`)) return false;
+
+        // Check if this is a direct child (next level)
+        const domain = domainsMap[code];
+        const levelElement = domain.getElementsByTagName('Level')[0];
+        const level = parseInt(levelElement?.textContent || '0');
+
+        return level === currentLevel;
+      })
+      .forEach(childCode => {
+        const childDomain = domainsMap[childCode];
+        const childLabel = getLabelForLanguage(childDomain, languageCode);
+
+        // Create child subdomain
+        const childSubDomain: SubDomain = {
+          code: childCode,
+          label: childLabel,
+          subDomains: [],
+        };
+
+        // Check if we need to go deeper (only if this domain has subdomains)
+        const hasSubDomainsElement = childDomain.getElementsByTagName('HasSubDomains')[0];
+        const hasSubDomains = hasSubDomainsElement?.textContent === 'true';
+
+        if (hasSubDomains) {
+          buildDomainHierarchy(
+            childSubDomain,
+            childCode,
+            languageCode,
+            domainsMap,
+            currentLevel + 1
+          );
+        }
+
+        // Add this child to the parent's subdomains
+        if (!parentDomain.subDomains) {
+          parentDomain.subDomains = [];
+        }
+
+        parentDomain.subDomains.push(childSubDomain);
+      });
+  }
+
+  /**
+   * Helper function to get the label for a semantic domain in a specific language
+   */
+  function getLabelForLanguage(domainElement: Element, languageCode: string): string {
+    const localizationsElement = domainElement.getElementsByTagName(
+      'SemanticDomainLocalizations'
+    )[0];
+
+    if (!localizationsElement) {
+      return '';
+    }
+
+    const localizations = localizationsElement.getElementsByTagName('SemanticDomainLocalization');
+
+    for (let j = 0; j < localizations.length; j++) {
+      const localization = localizations[j] as Element;
+      const locLangCode = localization.getAttribute('LanguageCode') || '';
+
+      if (locLangCode === languageCode) {
+        const labelElement = localization.getElementsByTagName('Label')[0];
+        return labelElement?.textContent || '';
+      }
+    }
+
+    return '';
+  }
+}
+
+/**
+ * Remove and log duplicate occurrences from senses in entries by language
+ */
+function removeDuplicateOccurrences(entriesByLanguage: EntriesByLanguage): void {
+  for (const languageCode in entriesByLanguage) {
+    const entries = entriesByLanguage[languageCode];
+    for (const entry of Object.values(entries)) {
+      for (const sense of entry.senses) {
+        if (sense.occurrences) {
+          const uniqueOccurrences = new Set(sense.occurrences.map(occ => occ.id));
+          sense.occurrences = Array.from(uniqueOccurrences).map(id => ({ id }));
+          if (uniqueOccurrences.size !== sense.occurrences.length) {
+            // Print out all the duplicates
+            const rawOccurrences = sense.occurrences.map(occ => occ.id);
+            const duplicates = rawOccurrences.filter(
+              (occ, index) => rawOccurrences.indexOf(occ) !== index
+            );
+            console.warn(
+              `Duplicate occurrences found for sense ${sense.id}: ${duplicates.join(', ')}`
+            );
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
  * Write entries to an XML output file.
  */
 function writeOutputFile(
   outputFile: string,
   entries: Record<string, Entry>,
   language: string,
-  dictionaryType: string,
-  version: string
+  dictionaryType: 'SDBG' | 'SDBH',
+  version: string,
+  taxonomiesByLanguage?: TaxonomiesByLanguage
 ): void {
   const doc = new DOMParser().parseFromString(
     '<LexicalReferenceText></LexicalReferenceText>',
     'text/xml'
   );
   const root = doc.documentElement;
+  root.setAttribute('SchemaVersion', '1.0');
   root.setAttribute('Id', dictionaryType);
-  root.setAttribute('Version', version);
+  root.setAttribute(
+    'Title',
+    dictionaryType === DICTIONARY_TYPE.GREEK
+      ? 'Biblical Greek Dictionary'
+      : 'Biblical Hebrew Dictionary'
+  );
+  root.setAttribute('DataVersion', version);
   root.setAttribute('Language', language);
 
   // Create the Entries container element
   const entriesElem = doc.createElement('Entries');
   root.appendChild(entriesElem);
+
+  /**
+   * Helper function to clean IDs:
+   * 1. Remove the prefix (entry-/sense-)
+   * 2. Trim IDs to the appropriate length
+   */
+  function cleanId(id: string): string {
+    // From https://docs.google.com/document/d/1sxYArR24YxjxJDd-r1talTlK3YGKpUNPMK24z8RU1Tg
+    // 6 digits representing the entry and 9 digits representing each level
+    // (base form index, lexical meaning index, contextual meaning index)
+    if (id.startsWith(ENTRY_PREFIX))
+      return id.substring(ENTRY_PREFIX.length, ENTRY_PREFIX.length + 6);
+    else if (id.startsWith(SENSE_PREFIX))
+      return id.substring(SENSE_PREFIX.length, SENSE_PREFIX.length + 15);
+    // If the ID doesn't start with either prefix, return it as is
+    else return id;
+  }
 
   // Add entries
   const sortedLemmas = Object.keys(entries).sort();
@@ -934,8 +1335,8 @@ function writeOutputFile(
     const entryData = entries[lemma];
 
     const entryElem = doc.createElement('Entry');
+    entryElem.setAttribute('Id', cleanId(entryData.id));
     entryElem.setAttribute('Lemma', lemma);
-    entryElem.setAttribute('Id', entryData.id);
 
     // Add Strong's codes if available
     if (entryData.strongsCodes && entryData.strongsCodes.length > 0) {
@@ -956,7 +1357,7 @@ function writeOutputFile(
     // We don't output the full hierarchy, just all senses in a flat structure
     for (const senseData of entryData.senses) {
       const senseElem = doc.createElement('Sense');
-      senseElem.setAttribute('Id', senseData.id);
+      senseElem.setAttribute('Id', cleanId(senseData.id));
 
       const definitionElem = doc.createElement('Definition');
       definitionElem.textContent = senseData.definition;
@@ -983,7 +1384,8 @@ function writeOutputFile(
         // Add occurrences to the corpus
         for (const occurrence of senseData.occurrences) {
           const occurrenceElem = doc.createElement('Occurrence');
-          occurrenceElem.setAttribute('Id', occurrence.id);
+          occurrenceElem.setAttribute('Type', 'U23003');
+          occurrenceElem.textContent = occurrence.id;
           corpusElem.appendChild(occurrenceElem);
         }
 
@@ -996,7 +1398,7 @@ function writeOutputFile(
         const domainsElem = doc.createElement('Domains');
         for (const domain of senseData.domains) {
           const domainElem = doc.createElement('Domain');
-          domainElem.setAttribute('Taxonomy', 'Louw-Nida');
+          domainElem.setAttribute('Taxonomy', domain.taxonomy);
           domainElem.setAttribute('Code', domain.code);
           domainElem.textContent = domain.value;
           domainsElem.appendChild(domainElem);
@@ -1008,6 +1410,62 @@ function writeOutputFile(
     }
 
     entriesElem.appendChild(entryElem);
+  }
+
+  // Add taxonomies if available for this language
+  if (
+    taxonomiesByLanguage &&
+    taxonomiesByLanguage[language] &&
+    Object.keys(taxonomiesByLanguage[language]).length > 0
+  ) {
+    const taxonomiesElem = doc.createElement('Taxonomies');
+    root.appendChild(taxonomiesElem);
+
+    // Add each taxonomy for the language (both Lexical and Contextual)
+    for (const taxonomyId in taxonomiesByLanguage[language]) {
+      const taxonomy = taxonomiesByLanguage[language][taxonomyId];
+      const taxonomyElem = doc.createElement('Taxonomy');
+      taxonomyElem.setAttribute('Id', taxonomy.id);
+      taxonomyElem.setAttribute('Title', taxonomy.title);
+
+      // Create the SubDomains container element
+      const subDomainsElem = doc.createElement('SubDomains');
+      taxonomyElem.appendChild(subDomainsElem);
+
+      // Add each subdomain
+      for (const subDomain of taxonomy.subDomains) {
+        addSubDomainToElement(subDomain, subDomainsElem);
+      }
+
+      taxonomiesElem.appendChild(taxonomyElem);
+    }
+  }
+
+  /**
+   * Helper function to recursively add subdomains to an element
+   */
+  function addSubDomainToElement(subDomain: SubDomain, parentElement: Element): void {
+    // Create SubDomain element
+    const subDomainElem = doc.createElement('SubDomain');
+    subDomainElem.setAttribute('Code', subDomain.code);
+    if (subDomain.label) subDomainElem.setAttribute('Name', subDomain.label);
+
+    // If this subdomain has children, add them in a SubDomains container
+    if (subDomain.subDomains && subDomain.subDomains.length > 0) {
+      // Create SubDomains container for children
+      const childSubDomainsElem = doc.createElement('SubDomains');
+
+      // Add each child subdomain recursively
+      for (const childSubDomain of subDomain.subDomains) {
+        addSubDomainToElement(childSubDomain, childSubDomainsElem);
+      }
+
+      // Append the SubDomains container to the current subdomain
+      subDomainElem.appendChild(childSubDomainsElem);
+    }
+
+    // Finally add the completed subdomain to its parent
+    parentElement.appendChild(subDomainElem);
   }
 
   // Write to file with pretty printing
@@ -1054,6 +1512,7 @@ function main(): void {
     .requiredOption('-m, --marble-links <dir>', 'Directory containing MARBLELinks XML files')
     .requiredOption('-d, --dictionary-type <type>', 'Dictionary type (SDBG or SDBH)')
     .requiredOption('-v, --version <version>', 'Version number for the output dictionary')
+    .option('-t, --domains <dir>', 'Directory containing domain XML files')
     .parse(process.argv);
 
   const options = program.opts();
@@ -1083,8 +1542,15 @@ function main(): void {
   console.log(`Output directory: ${options.output}`);
   console.log(`Version: ${options.version}`);
 
+  if (options.domains) {
+    console.log(`Domains directory: ${options.domains}`);
+  }
+
   // Create entriesByLanguage data structure
   const entriesByLanguage: EntriesByLanguage = {};
+
+  // Create taxonomiesByLanguage data structure
+  const taxonomiesByLanguage: TaxonomiesByLanguage = {};
 
   // First, process the lexicon files to build the data structure
   console.log(`\nStep 1: Processing lexicon files...`);
@@ -1102,8 +1568,22 @@ function main(): void {
     `MARBLELinks processing completed in ${((Date.now() - processLinksStart) / 1000).toFixed(2)} seconds.`
   );
 
+  // Next, process domain files to build taxonomies if provided
+  if (options.domains && fs.existsSync(options.domains)) {
+    console.log(`\nStep 3: Processing domain files to build taxonomies...`);
+    const processDomainsStart = Date.now();
+    processDomainFiles(options.domains, taxonomiesByLanguage, dictionaryType);
+    console.log(
+      `Domain processing completed in ${((Date.now() - processDomainsStart) / 1000).toFixed(2)} seconds.`
+    );
+  } else {
+    console.log(`\nSkipping domain processing: No domain directory provided or it does not exist.`);
+  }
+
   // Next, remove empty entries and senses
-  console.log(`\nStep 3: Removing empty entries and senses...`);
+  console.log(
+    `\nStep ${options.domains && fs.existsSync(options.domains) ? '4' : '3'}: Removing empty entries and senses...`
+  );
   const removeStart = Date.now();
   const removalStats = removeEmptyEntriesAndSenses(entriesByLanguage);
   console.log(
@@ -1133,8 +1613,13 @@ function main(): void {
     }
   }
 
+  // Check for duplicate occurrences
+  removeDuplicateOccurrences(entriesByLanguage);
+
   // Finally, write output files
-  console.log(`\nStep 4: Writing output files...`);
+  console.log(
+    `\nStep ${options.domains && fs.existsSync(options.domains) ? '5' : '4'}: Writing output files...`
+  );
   const writeStart = Date.now();
 
   // Create output directory if it doesn't exist
@@ -1145,12 +1630,14 @@ function main(): void {
   // Write output files for each language
   for (const language in entriesByLanguage) {
     const outputFile = path.join(options.output, `lexicon_${language}.xml`);
+
     writeOutputFile(
       outputFile,
       entriesByLanguage[language],
       language,
       dictionaryType,
-      options.version
+      options.version,
+      Object.keys(taxonomiesByLanguage).length > 0 ? taxonomiesByLanguage : undefined
     );
     console.log(
       `Generated ${outputFile} with ${Object.keys(entriesByLanguage[language]).length} entries`

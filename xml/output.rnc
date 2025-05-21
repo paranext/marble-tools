@@ -1,0 +1,78 @@
+namespace rng = "http://relaxng.org/ns/structure/1.0"
+datatypes xsd = "http://www.w3.org/2001/XMLSchema-datatypes"
+
+# Relax NG schema for Lexical Reference Text files we create
+
+start = element LexicalReferenceText {
+  attribute SchemaVersion { text },
+  attribute Id { text },
+  attribute Title { text },
+  attribute DataVersion { text },
+  attribute Language { text },
+  element Entries {
+    Entry+
+  }?,
+  element Taxonomies {
+    Taxonomy+
+  }?
+}
+
+Entry = element Entry {
+  attribute Id { text },
+  attribute Lemma { text },
+  element Senses {
+    Sense+
+  }
+  StrongsCodes?,
+  Occurrences?,
+  Domains?,
+}
+
+Sense = element Sense {
+  attribute Id { text },
+  element Definition { text }?,
+  element Glosses {
+    element Gloss { text }*
+  }?,
+  StrongsCodes?,
+  Occurrences?,
+  Domains?
+}
+
+StrongsCodes = element StrongsCodes {
+    element StrongsCode { text }+
+}
+
+Occurrences = element Occurrences {
+  element Corpus {
+    attribute Id { text },
+    element Occurrence {
+      attribute Type { text },
+      text
+    }+
+  }+
+}
+
+Domains = element Domains {
+  element Domain {
+    attribute Taxonomy { text },
+    attribute Code { text },
+    text?
+  }+
+}
+
+Taxonomy = element Taxonomy {
+  attribute Id { text },
+  attribute Title { text },
+  element SubDomains {
+    SubDomainDefinition+
+  }
+}
+
+SubDomainDefinition = element SubDomain {
+  attribute Code { text },
+  attribute Name { text }?,
+  element SubDomains {
+    SubDomainDefinition+
+  }?
+}

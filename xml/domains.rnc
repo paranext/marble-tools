@@ -1,0 +1,35 @@
+namespace xsi = "http://www.w3.org/2001/XMLSchema-instance"
+namespace xsd = "http://www.w3.org/2001/XMLSchema"
+
+# Relax NG schema for Semantic Domain files in MARBLE
+start = element Domains {
+  attribute xmlns:xsi { text }?,
+  attribute xmlns:xsd { text }?,
+  SemanticDomain*
+}
+
+# Semantic Domain represents a single semantic domain
+SemanticDomain = element SemanticDomain {
+  element SemanticDomainLocalizations {
+    SemanticDomainLocalization*
+  },
+  element Level { xsd.integer },
+  element Prototype { text },
+  element Reference { text },
+  element Code { text },
+  element HasSubDomains { xsd.boolean },
+  element Entries { text }
+}
+
+# Localization for a semantic domain in a specific language
+SemanticDomainLocalization = element SemanticDomainLocalization {
+  attribute LanguageCode { text },
+  element Label { text }?,
+  element Description { text },
+  element Opposite { text },
+  element Comment { text }
+}
+
+# XSD types
+xsd.integer = xsd:integer
+xsd.boolean = xsd:boolean

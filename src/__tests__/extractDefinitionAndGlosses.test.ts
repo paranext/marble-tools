@@ -105,4 +105,22 @@ describe('extractDefinitionAndGlosses function', () => {
     expect(result.definition).toBe('Test definition');
     expect(result.glosses).toEqual(['valid gloss']);
   });
+
+  // Test with duplicate glosses (should be filtered out)
+  test('should filter out duplicate glosses', () => {
+    const xmlString = `
+      <Sense>
+        <DefinitionShort>Test definition</DefinitionShort>
+        <Glosses>
+          <Gloss>valid gloss</Gloss>
+          <Gloss>valid gloss</Gloss>
+        </Glosses>
+      </Sense>
+    `;
+    const element = createMockElement(xmlString);
+    const result = extractDefinitionAndGlosses(element);
+
+    expect(result.definition).toBe('Test definition');
+    expect(result.glosses).toEqual(['valid gloss']);
+  });
 });

@@ -1,7 +1,9 @@
+# Relax NG schema for Lexical Reference Text files we create
+# This was included to help AI understand the structure of XML files we generate in convert-marble-lexicon.ts
+# This file may also be important to share with partners who want to contribute lexical data
+
 namespace rng = "http://relaxng.org/ns/structure/1.0"
 datatypes xsd = "http://www.w3.org/2001/XMLSchema-datatypes"
-
-# Relax NG schema for Lexical Reference Text files we create
 
 start = element LexicalReferenceText {
   attribute SchemaVersion { text },

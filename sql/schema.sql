@@ -161,13 +161,18 @@ CREATE INDEX IF NOT EXISTS idx_entryoccurrences_reference ON EntryOccurrences (B
 CREATE INDEX IF NOT EXISTS idx_senseoccurrences_sense ON SenseOccurrences (SenseKey);
 CREATE INDEX IF NOT EXISTS idx_senseoccurrences_reference ON SenseOccurrences (BookNum, ChapterNum, VerseNum);
 
--- Create a view for easy access to occurrence data with relevant joins
+-- Create a view for easy access to sense occurrence data with relevant joins
 CREATE VIEW IF NOT EXISTS SenseOccurrenceView AS
 SELECT
   s.SenseKey,
-  lrt.Id AS Lexicon,
-  c.Id AS SourceText,
+  s.Id AS SenseId,
+  lrt.Id AS LexiconId,
+  lrt.LexicalReferenceTextKey,
+  lrt.Version as LexiconVersion,
+  c.Id AS SourceTextId,
   e.Lemma,
+  e.Id AS EntryId,
+  e.EntryKey,
   s.Definition,
   so.BookNum,
   so.ChapterNum,
@@ -175,9 +180,59 @@ SELECT
   so.WordNum,
   l.BCP47Code
 FROM
-  SenseOccurrences so
-  JOIN Senses s ON so.SenseKey = s.SenseKey
+  Senses s
   JOIN Entries e ON s.EntryKey = e.EntryKey
-  JOIN Corpora c ON so.CorpusKey = c.CorpusKey
+  JOIN LexicalReferenceTexts lrt ON e.LexicalReferenceTextKey = lrt.LexicalReferenceTextKey
   JOIN Languages l ON s.LanguageKey = l.LanguageKey
-  JOIN LexicalReferenceTexts lrt ON e.LexicalReferenceTextKey = lrt.LexicalReferenceTextKey;
+  LEFT JOIN SenseOccurrences so ON s.SenseKey = so.SenseKey
+  LEFT JOIN Corpora c ON so.CorpusKey = c.CorpusKey;
+
+-- Create a view for easy access to sense domain data with relevant joins
+CREATE VIEW IF NOT EXISTS SenseDomainView AS
+SELECT
+  sd.SenseKey,
+  t.Id AS TaxonomyId,
+  sd.DomainCode,
+  tdl.Label,
+  l.BCP47Code
+FROM
+  SenseDomains sd
+  JOIN Taxonomies t ON sd.TaxonomyKey = t.TaxonomyKey
+  LEFT JOIN TaxonomyDomains td ON sd.DomainCode = td.DomainCode AND sd.TaxonomyKey = td.TaxonomyKey
+  LEFT JOIN TaxonomyDomainLabels tdl ON td.TaxonomyDomainKey = tdl.TaxonomyDomainKey
+  LEFT JOIN Languages l ON tdl.LanguageKey = l.LanguageKey;
+
+-- Create a view for easy access to entry occurrence data with relevant joins
+CREATE VIEW IF NOT EXISTS EntryOccurrenceView AS
+SELECT
+  e.EntryKey,
+  e.Id AS EntryId,
+  lrt.Id AS LexiconId,
+  lrt.LexicalReferenceTextKey,
+  lrt.Version as LexiconVersion,
+  e.Lemma,
+  c.Id AS SourceTextId,
+  eo.BookNum,
+  eo.ChapterNum,
+  eo.VerseNum,
+  eo.WordNum
+FROM
+  Entries e
+  JOIN LexicalReferenceTexts lrt ON e.LexicalReferenceTextKey = lrt.LexicalReferenceTextKey
+  LEFT JOIN EntryOccurrences eo ON e.EntryKey = eo.EntryKey
+  LEFT JOIN Corpora c ON eo.CorpusKey = c.CorpusKey;
+
+-- Create a view for easy access to entry domain data with relevant joins
+CREATE VIEW IF NOT EXISTS EntryDomainView AS
+SELECT
+    ed.EntryKey,
+    t.Id AS TaxonomyId,
+    ed.DomainCode,
+    tdl.Label,
+    l.BCP47Code
+  FROM
+    EntryDomains ed
+    JOIN Taxonomies t ON ed.TaxonomyKey = t.TaxonomyKey
+    LEFT JOIN TaxonomyDomains td ON ed.DomainCode = td.DomainCode AND ed.TaxonomyKey = td.TaxonomyKey
+    LEFT JOIN TaxonomyDomainLabels tdl ON td.TaxonomyDomainKey = tdl.TaxonomyDomainKey
+    LEFT JOIN Languages l ON tdl.LanguageKey = l.LanguageKey;

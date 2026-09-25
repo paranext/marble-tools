@@ -29,6 +29,7 @@ import {
   SENSE_PREFIX,
   transformDomainCode,
 } from './helpers';
+import { classifyDomainFile, SenseType } from './domain-taxonomy';
 
 // Define interfaces for our data structures
 interface Occurrence {
@@ -1014,11 +1015,18 @@ function processDomainFiles(
   taxonomiesByLanguage: TaxonomiesByLanguage,
   dictionaryType: 'SDBG' | 'SDBH'
 ): void {
-  // Look for SDBG-DOMAINS*.XML or SDBH-DOMAINS*.XML files
-  const prefix = dictionaryType === DICTIONARY_TYPE.GREEK ? 'SDBG-DOMAINS' : 'SDBH-DOMAINS';
-  const files = fs
-    .readdirSync(inputDir)
-    .filter(filename => filename.toUpperCase().startsWith(prefix) && filename.endsWith('.XML'));
+  // Look for exactly SDBG-DOMAINS1/2.XML or SDBH-DOMAINS1/2.XML. Upstream has shipped stray
+  // copies (e.g. "SDBH-DOMAINS1 - Copy.XML") alongside the real files, so anything else that
+  // starts with the prefix is skipped with a warning rather than processed.
+  const prefix = `${dictionaryType}-DOMAINS`;
+  const files: { filename: string; senseType: SenseType }[] = [];
+  for (const filename of fs.readdirSync(inputDir)) {
+    // From Reinier: DOMAINS1.XML is for lexical domains and DOMAINS2.XML is for contextual domains
+    const senseType = classifyDomainFile(filename, dictionaryType);
+    if (senseType) files.push({ filename, senseType });
+    else if (filename.toUpperCase().startsWith(prefix))
+      console.warn(`Ignoring unrecognized domain file ${filename} in ${inputDir}`);
+  }
 
   if (files.length === 0) {
     console.warn(`No domain files found with prefix ${prefix} in ${inputDir}`);
@@ -1027,10 +1035,10 @@ function processDomainFiles(
 
   console.log(`Found ${files.length} domain files to process`);
 
-  for (const filename of files) {
+  for (const { filename, senseType } of files) {
     const filePath = path.join(inputDir, filename);
     try {
-      processDomainFile(filePath, dictionaryType, taxonomiesByLanguage);
+      processDomainFile(filePath, senseType, dictionaryType, taxonomiesByLanguage);
     } catch (e) {
       console.error(`Error processing domain file ${filePath}: ${e}`);
     }
@@ -1046,12 +1054,10 @@ function processDomainFiles(
  */
 function processDomainFile(
   filePath: string,
+  senseType: SenseType,
   dictionaryType: 'SDBG' | 'SDBH',
   taxonomiesByLanguage: TaxonomiesByLanguage
 ): void {
-  // From Reinier: DOMAINS1.XML is for lexical domains and DOMAINS2.XML is for contextual domains
-  const senseType = filePath.includes('1') ? 'Lexical' : 'Contextual';
-
   const xmlContent = fs.readFileSync(filePath, 'utf8');
   const parser = new DOMParser();
   const doc = parser.parseFromString(xmlContent, 'text/xml');

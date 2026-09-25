@@ -29,7 +29,13 @@ import {
   SENSE_PREFIX,
   transformDomainCode,
 } from './helpers';
-import { classifyDomainFile, SenseType } from './domain-taxonomy';
+import {
+  buildDomainTree,
+  classifyDomainFile,
+  DomainRecord,
+  DomainTreeNode,
+  SenseType,
+} from './domain-taxonomy';
 
 // Define interfaces for our data structures
 interface Occurrence {
@@ -78,6 +84,12 @@ interface Taxonomy {
   id: string;
   title: string;
   subDomains: SubDomain[];
+}
+
+/** A domain from a taxonomy file, with what is needed to output it */
+interface DomainFileRecord extends DomainRecord {
+  displayCode: string;
+  element: Element;
 }
 
 interface TaxonomiesByLanguage {
@@ -1064,64 +1076,59 @@ function processDomainFile(
   const doc = parser.parseFromString(xmlContent, 'text/xml');
 
   // Get all semantic domains
+  const fileName = path.basename(filePath);
   const semanticDomains = doc.getElementsByTagName('SemanticDomain');
   console.log(
-    `Found ${semanticDomains.length} semantic domains in ${path.basename(filePath)} for ${senseType} domains`
+    `Found ${semanticDomains.length} semantic domains in ${fileName} for ${senseType} domains`
   );
 
-  // Map to store domains by code
-  const domainsByCode: Record<string, Element> = {};
-  const domainsByLevel: Record<string, Element[]> = {};
-  const topLevelDomainCodes: string[] = [];
+  const records: DomainFileRecord[] = [];
 
-  // First pass: collect all domains and organize them by level
+  // Collect the domains in source order
   for (let i = 0; i < semanticDomains.length; i++) {
     const domain = semanticDomains[i] as Element;
     const codeElement = domain.getElementsByTagName('Code')[0];
 
     if (!codeElement) {
-      console.warn(`Semantic domain #${i} has no Code element in ${path.basename(filePath)}`);
+      console.warn(`Semantic domain #${i} has no Code element in ${fileName}`);
       continue;
     }
 
-    const codes = transformDomainCode(codeElement.textContent || '');
+    const rawCode = (codeElement.textContent || '').trim();
+    const codes = transformDomainCode(rawCode);
     if (!codes || codes.length === 0) {
-      console.warn(`Semantic domain #${i} has empty Code in ${path.basename(filePath)}`);
+      console.warn(`Semantic domain #${i} has empty Code in ${fileName}`);
       continue;
     }
 
     if (codes.length !== 1) {
-      console.warn(
-        `Semantic domain #${i} has multiple codes (${codes.join(', ')}) in ${path.basename(filePath)}`
-      );
+      console.warn(`Semantic domain #${i} has multiple codes (${codes.join(', ')}) in ${fileName}`);
       continue;
     }
 
-    const code = codes[0];
-    domainsByCode[code] = domain;
-
-    const levelElement = domain.getElementsByTagName('Level')[0];
-    const level = levelElement?.textContent || '0';
-
-    if (!domainsByLevel[level]) {
-      domainsByLevel[level] = [];
-    }
-
-    domainsByLevel[level].push(domain);
-
-    // Keep track of top-level domains (level 1)
-    if (level === '1') {
-      topLevelDomainCodes.push(code);
-    }
+    const levelText = domain.getElementsByTagName('Level')[0]?.textContent;
+    const hasSubDomainsText = domain.getElementsByTagName('HasSubDomains')[0]?.textContent;
+    records.push({
+      code: rawCode,
+      displayCode: codes[0],
+      level: levelText ? parseInt(levelText, 10) : undefined,
+      hasSubDomains: hasSubDomainsText ? hasSubDomainsText === 'true' : undefined,
+      element: domain,
+    });
   }
 
-  // Process for each language
-  const processedLanguages = new Set<string>();
+  // From data inspection: <HasSubDomains> is unreliable. Several parents upstream (e.g. 001001
+  // Beings) say false even though child domains exist, and following the flag dropped whole
+  // subtrees (People, Animals). The codes themselves are consistent in every snapshot: each code
+  // longer than 3 digits has its parent (the code minus its last 3 digits) in the same file. So
+  // the hierarchy is built from the code structure, and <Level>/<HasSubDomains> are only checked.
+  const { roots, warnings } = buildDomainTree(records);
+  for (const warning of warnings) console.warn(`${fileName}: ${warning.message}`);
 
   // Identify all available languages across all domains
-  for (const code in domainsByCode) {
-    const domain = domainsByCode[code];
-    const localizationsElement = domain.getElementsByTagName('SemanticDomainLocalizations')[0];
+  const processedLanguages = new Set<string>();
+  for (const { element } of records) {
+    const localizationsElement = element.getElementsByTagName('SemanticDomainLocalizations')[0];
 
     if (!localizationsElement) {
       continue;
@@ -1150,87 +1157,21 @@ function processDomainFile(
     taxonomiesByLanguage[languageCode][taxonomyId] = {
       id: taxonomyId,
       title: `${senseType} Semantic Domains for ${dictionaryType === DICTIONARY_TYPE.GREEK ? 'Greek' : 'Hebrew'}`,
-      subDomains: [],
+      subDomains: roots.map(root => toSubDomain(root, languageCode)),
     };
-
-    // Build top-level domains first
-    for (const topLevelCode of topLevelDomainCodes) {
-      const domain = domainsByCode[topLevelCode];
-      const label = getLabelForLanguage(domain, languageCode);
-
-      // Create top-level subdomain
-      const subDomain: SubDomain = {
-        code: topLevelCode,
-        label,
-        subDomains: [],
-      };
-
-      // Build hierarchy for this top-level domain by recursively adding child domains
-      buildDomainHierarchy(subDomain, topLevelCode, languageCode, domainsByCode, 2);
-
-      // Add to taxonomy
-      taxonomiesByLanguage[languageCode][taxonomyId].subDomains.push(subDomain);
-    }
   }
 
   console.log(`Processed ${processedLanguages.size} languages for ${senseType} domain taxonomy`);
 
   /**
-   * Recursively builds a domain hierarchy starting from a parent domain
+   * Convert a domain tree node (and its descendants) to the output structure for one language
    */
-  function buildDomainHierarchy(
-    parentDomain: SubDomain,
-    parentCode: string,
-    languageCode: string,
-    domainsMap: Record<string, Element>,
-    currentLevel: number
-  ): void {
-    // Find all domains that start with the parent code and are at the current level
-    // For example, if parentCode is "001" and currentLevel is 2, find all codes like "001001", "001002", etc.
-    Object.keys(domainsMap)
-      .filter(code => {
-        // The code must start with parent code but not be the parent code itself
-        if (code === parentCode || !code.startsWith(`${parentCode}.`)) return false;
-
-        // Check if this is a direct child (next level)
-        const domain = domainsMap[code];
-        const levelElement = domain.getElementsByTagName('Level')[0];
-        const level = parseInt(levelElement?.textContent || '0');
-
-        return level === currentLevel;
-      })
-      .forEach(childCode => {
-        const childDomain = domainsMap[childCode];
-        const childLabel = getLabelForLanguage(childDomain, languageCode);
-
-        // Create child subdomain
-        const childSubDomain: SubDomain = {
-          code: childCode,
-          label: childLabel,
-          subDomains: [],
-        };
-
-        // Check if we need to go deeper (only if this domain has subdomains)
-        const hasSubDomainsElement = childDomain.getElementsByTagName('HasSubDomains')[0];
-        const hasSubDomains = hasSubDomainsElement?.textContent === 'true';
-
-        if (hasSubDomains) {
-          buildDomainHierarchy(
-            childSubDomain,
-            childCode,
-            languageCode,
-            domainsMap,
-            currentLevel + 1
-          );
-        }
-
-        // Add this child to the parent's subdomains
-        if (!parentDomain.subDomains) {
-          parentDomain.subDomains = [];
-        }
-
-        parentDomain.subDomains.push(childSubDomain);
-      });
+  function toSubDomain(node: DomainTreeNode<DomainFileRecord>, languageCode: string): SubDomain {
+    return {
+      code: node.record.displayCode,
+      label: getLabelForLanguage(node.record.element, languageCode),
+      subDomains: node.children.map(child => toSubDomain(child, languageCode)),
+    };
   }
 
   /**

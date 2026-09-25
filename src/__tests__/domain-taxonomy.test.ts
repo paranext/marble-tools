@@ -18,5 +18,6 @@ describe('classifyDomainFile', () => {
     expect(classifyDomainFile('SDBH-DOMAINS1 - Copy.XML', 'SDBH')).toBeUndefined();
     expect(classifyDomainFile('SDBG-DOMAINS1.XML', 'SDBH')).toBeUndefined();
     expect(classifyDomainFile('SDBH-DOMAINS3.XML', 'SDBH')).toBeUndefined();
+    expect(classifyDomainFile('SDBH-DOMAINS1.JSON', 'SDBH')).toBeUndefined();
   });
 });

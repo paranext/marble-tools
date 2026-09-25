@@ -1017,14 +1017,15 @@ function processDomainFiles(
 ): void {
   // Look for exactly SDBG-DOMAINS1/2.XML or SDBH-DOMAINS1/2.XML. Upstream has shipped stray
   // copies (e.g. "SDBH-DOMAINS1 - Copy.XML") alongside the real files, so anything else that
-  // starts with the prefix is skipped with a warning rather than processed.
+  // starts with the prefix is skipped with a warning rather than processed. Non-XML sidecars
+  // (e.g. SDBH-DOMAINS1.JSON) are skipped silently.
   const prefix = `${dictionaryType}-DOMAINS`;
   const files: { filename: string; senseType: SenseType }[] = [];
   for (const filename of fs.readdirSync(inputDir)) {
     // From Reinier: DOMAINS1.XML is for lexical domains and DOMAINS2.XML is for contextual domains
     const senseType = classifyDomainFile(filename, dictionaryType);
     if (senseType) files.push({ filename, senseType });
-    else if (filename.toUpperCase().startsWith(prefix))
+    else if (filename.toUpperCase().startsWith(prefix) && filename.toUpperCase().endsWith('.XML'))
       console.warn(`Ignoring unrecognized domain file ${filename} in ${inputDir}`);
   }
 

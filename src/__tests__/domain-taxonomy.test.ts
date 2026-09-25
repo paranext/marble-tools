@@ -1,8 +1,12 @@
 import {
   buildDomainTree,
+  checkSenseDomainConsistency,
   classifyDomainFile,
   DomainRecord,
   DomainTreeNode,
+  domainValueMatchesLabel,
+  SenseDomainRef,
+  TaxonomyLabelIndex,
 } from '../domain-taxonomy';
 
 describe('classifyDomainFile', () => {
@@ -134,5 +138,127 @@ describe('buildDomainTree', () => {
     expect(roots[0].record).toBe(records[0]);
     expect(roots[0].children[0].record).toBe(records[1]);
     expect(roots[0].children[0].record.code).toBe('001002');
+  });
+});
+
+describe('domainValueMatchesLabel', () => {
+  test('matches exactly', () => {
+    expect(domainValueMatchesLabel('Land', 'Land')).toBe(true);
+  });
+
+  test('compares case-insensitively after trimming', () => {
+    expect(domainValueMatchesLabel('Health and SIckness', 'Health and Sickness')).toBe(true);
+    expect(domainValueMatchesLabel('  Land ', 'Land')).toBe(true);
+  });
+
+  test('strips a leading "Parts: " from the value', () => {
+    expect(domainValueMatchesLabel('Parts: Buildings', 'Buildings')).toBe(true);
+  });
+
+  test('a relation value matches when any separated part equals the label', () => {
+    expect(domainValueMatchesLabel('Divine … Human', 'Divine')).toBe(true);
+    expect(domainValueMatchesLabel('Divine … Human', 'Human')).toBe(true);
+    expect(domainValueMatchesLabel('Divine … Human', 'Destruction')).toBe(false);
+    expect(domainValueMatchesLabel('Divine ... Human', 'Human')).toBe(true);
+    expect(domainValueMatchesLabel('Human>Artifact', 'Human')).toBe(true);
+    expect(domainValueMatchesLabel('Human>Artifact', 'Artifact')).toBe(true);
+  });
+
+  test('ignores empty relation parts', () => {
+    expect(domainValueMatchesLabel('Divine …', 'Divine')).toBe(true);
+    expect(domainValueMatchesLabel('Divine …', '')).toBe(false);
+  });
+
+  test('anything else is a mismatch', () => {
+    expect(domainValueMatchesLabel('Land', 'Law')).toBe(false);
+    expect(domainValueMatchesLabel('Divine Human', 'Divine')).toBe(false);
+  });
+});
+
+describe('checkSenseDomainConsistency', () => {
+  const labels: TaxonomyLabelIndex = {
+    'SDBH-Lexical': { '1': 'Objects', '1.2': 'Animals', '1.2.3': 'Birds' },
+    'SDBH-Contextual': { '98': 'Land', '99': 'Law' },
+  };
+
+  function ref(taxonomy: string, code: string, value: string): SenseDomainRef {
+    return { taxonomy, code, value };
+  }
+
+  test('counts matches, mismatches, and missing codes per taxonomy, sorted by taxonomy id', () => {
+    const refs: SenseDomainRef[] = [
+      ref('SDBH-Lexical', '1', 'Objects'),
+      ref('SDBH-Lexical', '1.2', 'animals'),
+      ref('SDBH-Lexical', '1.2.3', 'Birds'),
+      ref('SDBH-Lexical', '1.2.3', 'Fish'),
+      ref('SDBH-Contextual', '98', 'Land'),
+      ref('SDBH-Contextual', '98', 'Law'),
+      ref('SDBH-Contextual', '99', 'Land'),
+      ref('SDBH-Contextual', '99', 'Land'),
+      ref('SDBH-Contextual', '100', 'Sea'),
+    ];
+
+    const stats = checkSenseDomainConsistency(refs, labels);
+
+    expect(stats.map(s => s.taxonomy)).toEqual(['SDBH-Contextual', 'SDBH-Lexical']);
+    const [contextual, lexical] = stats;
+    expect(contextual).toMatchObject({
+      total: 5,
+      matched: 1,
+      mismatched: 3,
+      missingCode: 1,
+      mismatchRate: 0.8,
+    });
+    expect(contextual.examples).toEqual([
+      { code: '99', value: 'Land', label: 'Law', count: 2 },
+      { code: '98', value: 'Law', label: 'Land', count: 1 },
+      { code: '100', value: 'Sea', label: undefined, count: 1 },
+    ]);
+    expect(lexical).toMatchObject({
+      total: 4,
+      matched: 3,
+      mismatched: 1,
+      missingCode: 0,
+      mismatchRate: 0.25,
+    });
+    expect(lexical.examples).toEqual([{ code: '1.2.3', value: 'Fish', label: 'Birds', count: 1 }]);
+  });
+
+  test('counts every code as missing for a taxonomy with no labels at all', () => {
+    const [stats] = checkSenseDomainConsistency([ref('SDBG-Lexical', '1', 'Objects')], labels);
+    expect(stats).toMatchObject({
+      taxonomy: 'SDBG-Lexical',
+      total: 1,
+      missingCode: 1,
+      mismatchRate: 1,
+    });
+  });
+
+  test('keeps only the top 10 examples by count', () => {
+    const refs: SenseDomainRef[] = [];
+    for (let i = 0; i < 12; i++)
+      for (let n = 0; n <= i; n++) refs.push(ref('SDBH-Contextual', '98', `Wrong ${i}`));
+
+    const [stats] = checkSenseDomainConsistency(refs, labels);
+
+    expect(stats.examples).toHaveLength(10);
+    expect(stats.examples[0]).toEqual({ code: '98', value: 'Wrong 11', label: 'Land', count: 12 });
+    expect(stats.examples[9].value).toBe('Wrong 2');
+  });
+
+  test('omits taxonomies with no sense domains', () => {
+    const stats = checkSenseDomainConsistency([ref('SDBH-Contextual', '98', 'Land')], labels);
+    expect(stats).toEqual([
+      {
+        taxonomy: 'SDBH-Contextual',
+        total: 1,
+        matched: 1,
+        mismatched: 0,
+        missingCode: 0,
+        mismatchRate: 0,
+        examples: [],
+      },
+    ]);
+    expect(checkSenseDomainConsistency([], labels)).toEqual([]);
   });
 });

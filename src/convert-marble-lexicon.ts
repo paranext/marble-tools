@@ -31,10 +31,14 @@ import {
 } from './helpers';
 import {
   buildDomainTree,
+  checkSenseDomainConsistency,
   classifyDomainFile,
   DomainRecord,
   DomainTreeNode,
+  MAX_DOMAIN_MISMATCH_RATE,
+  SenseDomainRef,
   SenseType,
+  TaxonomyLabelIndex,
 } from './domain-taxonomy';
 
 // Define interfaces for our data structures
@@ -1229,6 +1233,89 @@ function removeDuplicateOccurrences(entriesByLanguage: EntriesByLanguage): void 
   }
 }
 
+/** Index the English taxonomy labels by taxonomy id and display code */
+function buildEnglishLabelIndex(taxonomiesByLanguage: TaxonomiesByLanguage): TaxonomyLabelIndex {
+  const index: TaxonomyLabelIndex = {};
+  const addLabels = (labels: Record<string, string>, subDomains: SubDomain[]): void => {
+    for (const subDomain of subDomains) {
+      labels[subDomain.code] = subDomain.label;
+      if (subDomain.subDomains) addLabels(labels, subDomain.subDomains);
+    }
+  };
+  for (const [taxonomyId, taxonomy] of Object.entries(taxonomiesByLanguage['en'] ?? {})) {
+    index[taxonomyId] = {};
+    addLabels(index[taxonomyId], taxonomy.subDomains);
+  }
+  return index;
+}
+
+function* allSenseDomains(entriesByLanguage: EntriesByLanguage): Generator<SenseDomainRef> {
+  for (const entries of Object.values(entriesByLanguage))
+    for (const entry of Object.values(entries))
+      for (const sense of entry.senses) yield* sense.domains ?? [];
+}
+
+/**
+ * Check that the domain text on every sense agrees with the English taxonomy label for its code,
+ * print a summary, and exit with an error if any taxonomy disagrees too often. Sense domain text is
+ * English in every language, so all languages are checked against the English labels. This guards
+ * against source snapshots whose entries and taxonomy are numbered out of sync (PT-4547).
+ */
+function checkSenseDomainsOrExit(
+  entriesByLanguage: EntriesByLanguage,
+  taxonomiesByLanguage: TaxonomiesByLanguage
+): void {
+  if (!taxonomiesByLanguage['en']) {
+    console.log('Skipping sense domain check: no English domain taxonomy was loaded.');
+    return;
+  }
+
+  const allStats = checkSenseDomainConsistency(
+    allSenseDomains(entriesByLanguage),
+    buildEnglishLabelIndex(taxonomiesByLanguage)
+  );
+
+  const columns = ['Taxonomy', 'Total', 'Matched', 'Mismatched', 'Missing code', 'Rate'];
+  const rows = allStats.map(stats => [
+    stats.taxonomy,
+    String(stats.total),
+    String(stats.matched),
+    String(stats.mismatched),
+    String(stats.missingCode),
+    `${(stats.mismatchRate * 100).toFixed(2)}%`,
+  ]);
+  const widths = columns.map((column, i) =>
+    Math.max(column.length, ...rows.map(row => row[i].length))
+  );
+  for (const row of [columns, ...rows])
+    console.log(
+      '  ' +
+        row
+          .map((cell, i) => (i === 0 ? cell.padEnd(widths[i]) : cell.padStart(widths[i])))
+          .join('  ')
+    );
+
+  for (const stats of allStats.filter(stats => stats.mismatchRate > 0)) {
+    console.log(
+      `\nMost frequent disagreements in ${stats.taxonomy} (code: sense text vs taxonomy label):`
+    );
+    for (const { code, value, label, count } of stats.examples)
+      console.log(
+        `  ${count} x ${code}: "${value}" vs ${label === undefined ? '(code not in taxonomy)' : `"${label}"`}`
+      );
+  }
+
+  const failed = allStats.filter(stats => stats.mismatchRate > MAX_DOMAIN_MISMATCH_RATE);
+  if (failed.length > 0) {
+    console.error(
+      `\nError: sense domain codes disagree with the taxonomy labels; the source data is probably ` +
+        `numbered out of sync. ${failed.map(stats => stats.taxonomy).join(', ')} exceeded the ` +
+        `${(MAX_DOMAIN_MISMATCH_RATE * 100).toFixed(0)}% mismatch limit. No output files were written.`
+    );
+    process.exit(1);
+  }
+}
+
 /**
  * Write entries to an XML output file.
  */
@@ -1563,6 +1650,10 @@ function main(): void {
 
   // Check for duplicate occurrences
   removeDuplicateOccurrences(entriesByLanguage);
+
+  // Fail before writing anything if sense domains disagree with the taxonomy labels
+  console.log(`\nChecking sense domains against the English taxonomy labels...`);
+  checkSenseDomainsOrExit(entriesByLanguage, taxonomiesByLanguage);
 
   // Finally, write output files
   console.log(

@@ -1,7 +1,9 @@
 import {
   buildDomainTree,
   checkSenseDomainConsistency,
+  classifyConsistencyFailure,
   classifyDomainFile,
+  ConsistencyStats,
   DomainRecord,
   DomainTreeNode,
   domainValueMatchesLabel,
@@ -139,6 +141,19 @@ describe('buildDomainTree', () => {
     expect(roots[0].children[0].record).toBe(records[1]);
     expect(roots[0].children[0].record.code).toBe('001002');
   });
+
+  test('keeps the first of two records sharing a code and warns about the duplicate', () => {
+    const records = [
+      { code: '001', label: 'First' },
+      { code: '001', label: 'Second' },
+      { code: '001001', label: 'Child' },
+    ];
+    const { roots, warnings } = buildDomainTree(records);
+    expect(shape(roots)).toEqual([['001', [['001001', []]]]]);
+    expect(roots[0].record).toBe(records[0]);
+    expect(warnings).toEqual([{ code: '001', message: expect.stringContaining('001') }]);
+    expect(warnings[0].message).toMatch(/duplicate/i);
+  });
 });
 
 describe('domainValueMatchesLabel', () => {
@@ -260,5 +275,36 @@ describe('checkSenseDomainConsistency', () => {
       },
     ]);
     expect(checkSenseDomainConsistency([], labels)).toEqual([]);
+  });
+});
+
+describe('classifyConsistencyFailure', () => {
+  const labels: TaxonomyLabelIndex = {
+    'SDBH-Lexical': { '1': 'Objects' },
+    'SDBH-Empty': {},
+  };
+
+  function stats(taxonomy: string): ConsistencyStats {
+    return {
+      taxonomy,
+      total: 10,
+      matched: 5,
+      mismatched: 5,
+      missingCode: 0,
+      mismatchRate: 0.5,
+      examples: [],
+    };
+  }
+
+  test('a taxonomy with English labels that disagree is a mismatch', () => {
+    expect(classifyConsistencyFailure(stats('SDBH-Lexical'), labels)).toBe('mismatch');
+  });
+
+  test('a taxonomy absent from the label index was not loaded', () => {
+    expect(classifyConsistencyFailure(stats('SDBH-Contextual'), labels)).toBe('not-loaded');
+  });
+
+  test('a taxonomy with no labels at all was not loaded', () => {
+    expect(classifyConsistencyFailure(stats('SDBH-Empty'), labels)).toBe('not-loaded');
   });
 });

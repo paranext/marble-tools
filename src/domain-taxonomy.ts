@@ -45,17 +45,31 @@ const SEGMENT_LENGTH = 3;
 /**
  * Build the domain tree from code structure: a domain's parent is its code minus the last
  * 3-digit segment. Source order is preserved among siblings. Records whose parent code is
- * absent are attached at the top level rather than dropped. Returns warnings for: missing
- * parent; <Level> not equal to the segment count; <HasSubDomains> disagreeing with whether
- * children actually exist.
+ * absent are attached at the top level rather than dropped. When several records share a code,
+ * the first one is kept (children attach to it) and the rest are dropped. Returns warnings for:
+ * duplicate code; missing parent; <Level> not equal to the segment count; <HasSubDomains>
+ * disagreeing with whether children actually exist.
  */
 export function buildDomainTree<T extends DomainRecord>(
   records: T[]
 ): { roots: DomainTreeNode<T>[]; warnings: DomainTreeWarning[] } {
-  const nodes = records.map(record => ({ record, children: [] as DomainTreeNode<T>[] }));
-  const nodesByCode = new Map(nodes.map(node => [node.record.code, node]));
+  const nodes: DomainTreeNode<T>[] = [];
+  const nodesByCode = new Map<string, DomainTreeNode<T>>();
   const roots: DomainTreeNode<T>[] = [];
   const warnings: DomainTreeWarning[] = [];
+
+  for (const record of records) {
+    if (nodesByCode.has(record.code)) {
+      warnings.push({
+        code: record.code,
+        message: `Duplicate domain code ${record.code}; keeping the first record and ignoring this one`,
+      });
+      continue;
+    }
+    const node: DomainTreeNode<T> = { record, children: [] };
+    nodes.push(node);
+    nodesByCode.set(record.code, node);
+  }
 
   for (const node of nodes) {
     const { code, level } = node.record;
@@ -201,4 +215,19 @@ export function checkSenseDomainConsistency(
       examples: [...examples.values()].sort((a, b) => b.count - a.count).slice(0, MAX_EXAMPLES),
     }))
     .sort((a, b) => a.taxonomy.localeCompare(b.taxonomy));
+}
+
+/**
+ * Why a taxonomy failed the consistency check: 'not-loaded' when the label index has no English
+ * labels for it at all (the domain file was missing or failed to parse), so every sense domain
+ * counts as a missing code; otherwise 'mismatch', meaning labels were loaded but disagree.
+ */
+export function classifyConsistencyFailure(
+  stats: ConsistencyStats,
+  labels: TaxonomyLabelIndex
+): 'not-loaded' | 'mismatch' {
+  const taxonomyLabels = labels[stats.taxonomy];
+  return taxonomyLabels === undefined || Object.keys(taxonomyLabels).length === 0
+    ? 'not-loaded'
+    : 'mismatch';
 }

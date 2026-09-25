@@ -32,6 +32,7 @@ import {
 import {
   buildDomainTree,
   checkSenseDomainConsistency,
+  classifyConsistencyFailure,
   classifyDomainFile,
   DomainRecord,
   DomainTreeNode,
@@ -1270,11 +1271,14 @@ function checkSenseDomainsOrExit(
     return;
   }
 
-  const allStats = checkSenseDomainConsistency(
-    allSenseDomains(entriesByLanguage),
-    buildEnglishLabelIndex(taxonomiesByLanguage)
-  );
+  const labels = buildEnglishLabelIndex(taxonomiesByLanguage);
+  const allStats = checkSenseDomainConsistency(allSenseDomains(entriesByLanguage), labels);
 
+  const languageCount = Object.keys(entriesByLanguage).length;
+  console.log(
+    `Sense domain check (counts summed across all ${languageCount} output languages; ` +
+      `sense text is English in every language):`
+  );
   const columns = ['Taxonomy', 'Total', 'Matched', 'Mismatched', 'Missing code', 'Rate'];
   const rows = allStats.map(stats => [
     stats.taxonomy,
@@ -1307,10 +1311,28 @@ function checkSenseDomainsOrExit(
 
   const failed = allStats.filter(stats => stats.mismatchRate > MAX_DOMAIN_MISMATCH_RATE);
   if (failed.length > 0) {
+    const limit = `${(MAX_DOMAIN_MISMATCH_RATE * 100).toFixed(0)}%`;
+    const notLoaded = failed.filter(
+      stats => classifyConsistencyFailure(stats, labels) === 'not-loaded'
+    );
+    const mismatched = failed.filter(stats => !notLoaded.includes(stats));
+    for (const stats of notLoaded)
+      console.error(
+        `\nError: taxonomy "${stats.taxonomy}" was not loaded (no English labels found; check the ` +
+          `domain files and earlier parse errors), so none of its ${stats.total} sense domains ` +
+          `could be checked.`
+      );
+    if (mismatched.length > 0)
+      console.error(
+        `\nError: sense domain codes disagree with the taxonomy labels; the source data is probably ` +
+          `numbered out of sync. ${mismatched.map(stats => stats.taxonomy).join(', ')} exceeded ` +
+          `the ${limit} mismatch limit.`
+      );
+    console.error('No output files were written.');
+    // GitHub Actions workflow command, so the failure shows on the PR checks page
     console.error(
-      `\nError: sense domain codes disagree with the taxonomy labels; the source data is probably ` +
-        `numbered out of sync. ${failed.map(stats => stats.taxonomy).join(', ')} exceeded the ` +
-        `${(MAX_DOMAIN_MISMATCH_RATE * 100).toFixed(0)}% mismatch limit. No output files were written.`
+      `::error::Sense domain consistency check failed: ` +
+        `${failed.map(stats => stats.taxonomy).join(', ')} exceeded the ${limit} mismatch limit`
     );
     process.exit(1);
   }

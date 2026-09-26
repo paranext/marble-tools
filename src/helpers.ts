@@ -387,26 +387,24 @@ export function transformDomainCode(code: string): string[] {
   // Skip empty codes
   if (!code) return [];
 
-  // From Reinier: Some domain codes contain a period at the beginning, the end, or in the middle.
-  // This is normally displayed as an ellipsis.
-  // For example: 089.056 is displayed as Human … Divine (signifying that an event has a divine
-  // actor and is affecting humans)
-  //
-  // We are not doing this because we aren't trying to represent relationships between domains in
-  // the simple model we are using. Also it's not clear how we would even represent the specific
-  // ellipsis example in the UI for non-Latin scripts.
+  // Relation codes (see the semantic domain notes in docs/current_lexicon_specification.md): a
+  // period marks an agent … object relation, e.g. 082.050 is Human … Divine, and 082. is Human …
+  // (the empty side has no code). A two-sided code yields both domains. We don't represent the
+  // relation itself: the model has no place for it, and it's not clear how the ellipsis would be
+  // shown for non-Latin scripts.
   if (code.length === 7 && code[3] === '.') {
     const code1 = code.substring(0, 3);
     const code2 = code.substring(4, 7);
     return [parseInt(code1, 10).toString(), parseInt(code2, 10).toString()];
   }
 
-  // From Reinier: Some domain codes are prefixed by 001002 followed by a colon. This code
-  // represents the lexical semantic domain Parts.
-  // e.g. 001002:001003 can be displayed as Parts: Vegetation
-  //
-  // We are not doing this because we aren't trying to represent relationships between domains in
-  // the simple model we are using. We will just process the part after the colon.
+  // Everything after the first non-digit is kept, which covers the remaining forms:
+  // - A one-sided relation (082. or .082) keeps its one code.
+  // - An extension of meaning written inline, e.g. 002003002023>002001002006 (Serve>Diligent),
+  //   keeps only the target domain.
+  // - The spec describes Parts codes as 001002: followed by the domain, e.g. 001002:001003 for
+  //   Parts: Vegetation, which would keep only the domain. Current data has no such codes: a
+  //   "Parts: X" domain is coded with X's own code, so it is indexed under X.
 
   // If there are non-digit characters, keeping only characters after the first non-digit
   let updatedCode = code;

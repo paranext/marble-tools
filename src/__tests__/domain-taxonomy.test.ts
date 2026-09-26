@@ -1,14 +1,19 @@
 import {
   buildDomainTree,
+  buildLabelIndex,
   checkSenseDomainConsistency,
   classifyConsistencyFailure,
   classifyDomainFile,
   ConsistencyStats,
+  domainCheckAnnotations,
   DomainRecord,
   DomainTreeNode,
   domainValueMatchesLabel,
+  evaluateDomainCheck,
+  parseHasSubDomains,
   SenseDomainRef,
   TaxonomyLabelIndex,
+  uniqueSenseDomains,
 } from '../domain-taxonomy';
 
 describe('classifyDomainFile', () => {
@@ -30,6 +35,23 @@ describe('classifyDomainFile', () => {
     expect(classifyDomainFile('SDBG-DOMAINS1.XML', 'SDBH')).toBeUndefined();
     expect(classifyDomainFile('SDBH-DOMAINS3.XML', 'SDBH')).toBeUndefined();
     expect(classifyDomainFile('SDBH-DOMAINS1.JSON', 'SDBH')).toBeUndefined();
+  });
+});
+
+describe('parseHasSubDomains', () => {
+  test('accepts any case and surrounding whitespace', () => {
+    expect(parseHasSubDomains('true')).toBe(true);
+    expect(parseHasSubDomains('True')).toBe(true);
+    expect(parseHasSubDomains(' true ')).toBe(true);
+    expect(parseHasSubDomains('false')).toBe(false);
+    expect(parseHasSubDomains('FALSE')).toBe(false);
+  });
+
+  test('returns undefined when the value is absent or blank', () => {
+    expect(parseHasSubDomains(undefined)).toBeUndefined();
+    expect(parseHasSubDomains(null)).toBeUndefined();
+    expect(parseHasSubDomains('')).toBeUndefined();
+    expect(parseHasSubDomains('  ')).toBeUndefined();
   });
 });
 
@@ -90,6 +112,18 @@ describe('buildDomainTree', () => {
     const { warnings } = buildDomainTree([{ code: '001', hasSubDomains: true }]);
     expect(warnings).toHaveLength(1);
     expect(warnings[0].code).toBe('001');
+  });
+
+  test('ignores a record whose code is not a sequence of 3-digit segments, with one warning', () => {
+    const records: DomainRecord[] = [
+      { code: '001', level: 1 },
+      { code: '00100', level: 2 },
+    ];
+    const { roots, warnings } = buildDomainTree(records);
+    expect(shape(roots)).toEqual([['001', []]]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].code).toBe('00100');
+    expect(warnings[0].message).toContain('3-digit segments');
   });
 
   test('attaches a record with a missing parent at the top level and warns', () => {
@@ -306,5 +340,114 @@ describe('classifyConsistencyFailure', () => {
 
   test('a taxonomy with no labels at all was not loaded', () => {
     expect(classifyConsistencyFailure(stats('SDBH-Empty'), labels)).toBe('not-loaded');
+  });
+});
+
+describe('buildLabelIndex', () => {
+  test('indexes nested labels by taxonomy id and code', () => {
+    const index = buildLabelIndex({
+      'SDBH-Lexical': {
+        subDomains: [
+          { code: '1', label: 'Objects', subDomains: [{ code: '1.2', label: 'Animals' }] },
+          { code: '2', label: 'Events', subDomains: [] },
+        ],
+      },
+      'SDBH-Contextual': { subDomains: [{ code: '98', label: 'Land' }] },
+    });
+    expect(index).toEqual({
+      'SDBH-Lexical': { '1': 'Objects', '1.2': 'Animals', '2': 'Events' },
+      'SDBH-Contextual': { '98': 'Land' },
+    });
+  });
+
+  test('is empty when no taxonomies were loaded for the language', () => {
+    expect(buildLabelIndex(undefined)).toEqual({});
+  });
+});
+
+describe('uniqueSenseDomains', () => {
+  test('yields the domains of a sense shared by several languages once', () => {
+    const domain: SenseDomainRef = { taxonomy: 'SDBH-Lexical', code: '1', value: 'Objects' };
+    const other: SenseDomainRef = { taxonomy: 'SDBH-Lexical', code: '2', value: 'Events' };
+    const senses = [
+      { id: 'S1', domains: [domain] },
+      { id: 'S2', domains: [other] },
+      { id: 'S3' },
+      { id: 'S1', domains: [domain] },
+    ];
+    expect([...uniqueSenseDomains(senses)]).toEqual([domain, other]);
+  });
+});
+
+describe('evaluateDomainCheck', () => {
+  const labels: TaxonomyLabelIndex = {
+    'SDBH-Lexical': { '1': 'Objects', '2': 'Events' },
+  };
+
+  function ref(taxonomy: string, code: string, value: string): SenseDomainRef {
+    return { taxonomy, code, value };
+  }
+
+  test('skips only when domains were not requested', () => {
+    expect(evaluateDomainCheck([ref('SDBH-Lexical', '1', 'Wrong')], labels, false)).toEqual({
+      skipped: true,
+      stats: [],
+      notLoaded: [],
+      mismatched: [],
+    });
+  });
+
+  test('passes when every taxonomy is within the mismatch limit', () => {
+    const result = evaluateDomainCheck([ref('SDBH-Lexical', '1', 'Objects')], labels, true);
+    expect(result).toMatchObject({ skipped: false, notLoaded: [], mismatched: [] });
+    expect(result.stats).toHaveLength(1);
+  });
+
+  test('fails every taxonomy as not loaded when domains were requested but none are English', () => {
+    const refs = [ref('SDBH-Lexical', '1', 'Objects'), ref('SDBH-Contextual', '98', 'Land')];
+    expect(evaluateDomainCheck(refs, {}, true)).toMatchObject({
+      skipped: false,
+      notLoaded: ['SDBH-Contextual', 'SDBH-Lexical'],
+      mismatched: [],
+    });
+  });
+
+  test('separates taxonomies that were not loaded from ones whose labels disagree', () => {
+    const refs = [ref('SDBH-Lexical', '1', 'Events'), ref('SDBH-Contextual', '98', 'Land')];
+    expect(evaluateDomainCheck(refs, labels, true)).toMatchObject({
+      notLoaded: ['SDBH-Contextual'],
+      mismatched: ['SDBH-Lexical'],
+    });
+  });
+});
+
+describe('domainCheckAnnotations', () => {
+  const base = { skipped: false, stats: [] };
+
+  test('names each kind of failure in its own annotation', () => {
+    expect(
+      domainCheckAnnotations({
+        ...base,
+        notLoaded: ['SDBH-Contextual'],
+        mismatched: ['SDBH-Lexical', 'SDBG-Lexical'],
+      })
+    ).toEqual([
+      '::error::Sense domain check failed: SDBH-Contextual not loaded (no English domain labels)',
+      '::error::Sense domain check failed: SDBH-Lexical, SDBG-Lexical exceeded the 1% mismatch limit',
+    ]);
+  });
+
+  test('does not blame the mismatch limit when a taxonomy was only not loaded', () => {
+    const annotations = domainCheckAnnotations({
+      ...base,
+      notLoaded: ['SDBH-Lexical'],
+      mismatched: [],
+    });
+    expect(annotations).toHaveLength(1);
+    expect(annotations[0]).not.toContain('mismatch limit');
+  });
+
+  test('is empty when nothing failed', () => {
+    expect(domainCheckAnnotations({ ...base, notLoaded: [], mismatched: [] })).toEqual([]);
   });
 });

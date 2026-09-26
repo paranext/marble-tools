@@ -41,14 +41,25 @@ export interface DomainTreeWarning {
 }
 
 const SEGMENT_LENGTH = 3;
+const VALID_CODE = /^(\d{3})+$/;
+
+/**
+ * Parse a <HasSubDomains> value. Accepts any case and surrounding whitespace; returns undefined
+ * when the element is absent or empty.
+ */
+export function parseHasSubDomains(text: string | null | undefined): boolean | undefined {
+  const normalized = text?.trim().toLowerCase();
+  return normalized ? normalized === 'true' : undefined;
+}
 
 /**
  * Build the domain tree from code structure: a domain's parent is its code minus the last
  * 3-digit segment. Source order is preserved among siblings. Records whose parent code is
  * absent are attached at the top level rather than dropped. When several records share a code,
- * the first one is kept (children attach to it) and the rest are dropped. Returns warnings for:
- * duplicate code; missing parent; <Level> not equal to the segment count; <HasSubDomains>
- * disagreeing with whether children actually exist.
+ * the first one is kept (children attach to it) and the rest are dropped. Records whose code is
+ * not a sequence of 3-digit segments are dropped. Returns warnings for: invalid code; duplicate
+ * code; missing parent; <Level> not equal to the segment count; <HasSubDomains> disagreeing with
+ * whether children actually exist.
  */
 export function buildDomainTree<T extends DomainRecord>(
   records: T[]
@@ -59,6 +70,13 @@ export function buildDomainTree<T extends DomainRecord>(
   const warnings: DomainTreeWarning[] = [];
 
   for (const record of records) {
+    if (!VALID_CODE.test(record.code)) {
+      warnings.push({
+        code: record.code,
+        message: `Domain code ${record.code} is not a sequence of 3-digit segments; ignoring it`,
+      });
+      continue;
+    }
     if (nodesByCode.has(record.code)) {
       warnings.push({
         code: record.code,
@@ -147,9 +165,17 @@ const RELATION_SEPARATOR = /…|\.\.\.|>/;
 
 /**
  * Whether the domain text on a sense agrees with the taxonomy label for its code. Compares
- * case-insensitively after trimming. From the source data: some values carry a "Parts: " prefix,
- * and relation values such as "Divine … Human" or "Human>Artifact" name several domains, so they
- * match when any non-empty part equals the label.
+ * case-insensitively after trimming. Domain text can be more than a single label (see the
+ * semantic domain notes in docs/current_lexicon_specification.md):
+ * - "Parts: X" names the parts of X (bark, branch, leaf for Trees) rather than kinds of X. The
+ *   code is X's own code, so the prefix is dropped before comparing.
+ * - "A … B" is a relation between an agent A and an object B; either side may be empty
+ *   ("Human …", "… Human"). A code such as "082.050" lists the two codes in the same order.
+ * - "A>B" is an extension of meaning, a mapping from source domain A to target domain B. The
+ *   code keeps only B.
+ * The value matches when any non-empty part equals the label. Pairing each code with its own part
+ * would add nothing: the output keeps only the set of codes on a sense, not the relation between
+ * them, and a code shifted out of sync also disagrees on its many single-label senses.
  */
 export function domainValueMatchesLabel(value: string, label: string): boolean {
   let normalizedValue = value.trim().toLowerCase();
@@ -230,4 +256,95 @@ export function classifyConsistencyFailure(
   return taxonomyLabels === undefined || Object.keys(taxonomyLabels).length === 0
     ? 'not-loaded'
     : 'mismatch';
+}
+
+/** A domain in a built taxonomy, reduced to what the label index needs */
+export interface LabeledDomain {
+  code: string;
+  label: string;
+  subDomains?: LabeledDomain[];
+}
+
+/** Index one language's taxonomy labels by taxonomy id and display code */
+export function buildLabelIndex(
+  taxonomies: { [taxonomyId: string]: { subDomains: LabeledDomain[] } } | undefined
+): TaxonomyLabelIndex {
+  const index: TaxonomyLabelIndex = {};
+  const addLabels = (labels: Record<string, string>, domains: LabeledDomain[]): void => {
+    for (const domain of domains) {
+      labels[domain.code] = domain.label;
+      if (domain.subDomains) addLabels(labels, domain.subDomains);
+    }
+  };
+  for (const [taxonomyId, taxonomy] of Object.entries(taxonomies ?? {})) {
+    index[taxonomyId] = {};
+    addLabels(index[taxonomyId], taxonomy.subDomains);
+  }
+  return index;
+}
+
+/**
+ * Yield the domains of each sense once, by sense id. Every output language carries the same
+ * senses under the same ids with the same domains, so walking all languages without this would
+ * multiply every count by the number of languages the sense appears in.
+ */
+export function* uniqueSenseDomains(
+  senses: Iterable<{ id: string; domains?: SenseDomainRef[] }>
+): Generator<SenseDomainRef> {
+  const seen = new Set<string>();
+  for (const sense of senses) {
+    if (seen.has(sense.id)) continue;
+    seen.add(sense.id);
+    yield* sense.domains ?? [];
+  }
+}
+
+export interface DomainCheckResult {
+  /** No domain directory was given, so there was nothing to check against */
+  skipped: boolean;
+  stats: ConsistencyStats[];
+  /** Taxonomies over the mismatch limit because no English labels were loaded for them */
+  notLoaded: string[];
+  /** Taxonomies over the mismatch limit because their English labels disagree with sense text */
+  mismatched: string[];
+}
+
+/**
+ * Decide whether the sense domains pass the consistency check. Skips only when domains were not
+ * requested. When they were, a missing English taxonomy is not a reason to skip: every sense
+ * domain in it counts as a missing code, so the taxonomy fails as not loaded.
+ */
+export function evaluateDomainCheck(
+  refs: Iterable<SenseDomainRef>,
+  labels: TaxonomyLabelIndex,
+  domainsRequested: boolean
+): DomainCheckResult {
+  if (!domainsRequested) return { skipped: true, stats: [], notLoaded: [], mismatched: [] };
+
+  const stats = checkSenseDomainConsistency(refs, labels);
+  const failed = stats.filter(s => s.mismatchRate > MAX_DOMAIN_MISMATCH_RATE);
+  const notLoaded = failed.filter(s => classifyConsistencyFailure(s, labels) === 'not-loaded');
+  return {
+    skipped: false,
+    stats,
+    notLoaded: notLoaded.map(s => s.taxonomy),
+    mismatched: failed.filter(s => !notLoaded.includes(s)).map(s => s.taxonomy),
+  };
+}
+
+/** GitHub Actions workflow commands for a failed check, one per kind of failure */
+export function domainCheckAnnotations(result: DomainCheckResult): string[] {
+  const limit = `${(MAX_DOMAIN_MISMATCH_RATE * 100).toFixed(0)}%`;
+  const annotations: string[] = [];
+  if (result.notLoaded.length > 0)
+    annotations.push(
+      `::error::Sense domain check failed: ${result.notLoaded.join(', ')} not loaded ` +
+        `(no English domain labels)`
+    );
+  if (result.mismatched.length > 0)
+    annotations.push(
+      `::error::Sense domain check failed: ${result.mismatched.join(', ')} exceeded the ` +
+        `${limit} mismatch limit`
+    );
+  return annotations;
 }

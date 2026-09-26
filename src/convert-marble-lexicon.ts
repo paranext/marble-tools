@@ -31,15 +31,16 @@ import {
 } from './helpers';
 import {
   buildDomainTree,
-  checkSenseDomainConsistency,
-  classifyConsistencyFailure,
+  buildLabelIndex,
   classifyDomainFile,
+  domainCheckAnnotations,
   DomainRecord,
   DomainTreeNode,
+  evaluateDomainCheck,
   MAX_DOMAIN_MISMATCH_RATE,
-  SenseDomainRef,
+  parseHasSubDomains,
   SenseType,
-  TaxonomyLabelIndex,
+  uniqueSenseDomains,
 } from './domain-taxonomy';
 
 // Define interfaces for our data structures
@@ -373,7 +374,9 @@ function processFile(
     return Array.from(elements);
   }
 
-  // Helper function to extract domain codes
+  // Extract the domain codes and English domain text. The Source and SourceCode attributes, which
+  // name the source domain of an extension of meaning (Source > Domain), are not used, so only the
+  // extended-to domain is kept.
   function extractDomains(
     container: Element,
     taxonomy: string,
@@ -1117,7 +1120,7 @@ function processDomainFile(
       code: rawCode,
       displayCode: codes[0],
       level: levelText ? parseInt(levelText, 10) : undefined,
-      hasSubDomains: hasSubDomainsText ? hasSubDomainsText === 'true' : undefined,
+      hasSubDomains: parseHasSubDomains(hasSubDomainsText),
       element: domain,
     });
   }
@@ -1234,28 +1237,6 @@ function removeDuplicateOccurrences(entriesByLanguage: EntriesByLanguage): void 
   }
 }
 
-/** Index the English taxonomy labels by taxonomy id and display code */
-function buildEnglishLabelIndex(taxonomiesByLanguage: TaxonomiesByLanguage): TaxonomyLabelIndex {
-  const index: TaxonomyLabelIndex = {};
-  const addLabels = (labels: Record<string, string>, subDomains: SubDomain[]): void => {
-    for (const subDomain of subDomains) {
-      labels[subDomain.code] = subDomain.label;
-      if (subDomain.subDomains) addLabels(labels, subDomain.subDomains);
-    }
-  };
-  for (const [taxonomyId, taxonomy] of Object.entries(taxonomiesByLanguage['en'] ?? {})) {
-    index[taxonomyId] = {};
-    addLabels(index[taxonomyId], taxonomy.subDomains);
-  }
-  return index;
-}
-
-function* allSenseDomains(entriesByLanguage: EntriesByLanguage): Generator<SenseDomainRef> {
-  for (const entries of Object.values(entriesByLanguage))
-    for (const entry of Object.values(entries))
-      for (const sense of entry.senses) yield* sense.domains ?? [];
-}
-
 /**
  * Check that the domain text on every sense agrees with the English taxonomy label for its code,
  * print a summary, and exit with an error if any taxonomy disagrees too often. Sense domain text is
@@ -1264,21 +1245,21 @@ function* allSenseDomains(entriesByLanguage: EntriesByLanguage): Generator<Sense
  */
 function checkSenseDomainsOrExit(
   entriesByLanguage: EntriesByLanguage,
-  taxonomiesByLanguage: TaxonomiesByLanguage
+  taxonomiesByLanguage: TaxonomiesByLanguage,
+  domainsRequested: boolean
 ): void {
-  if (!taxonomiesByLanguage['en']) {
-    console.log('Skipping sense domain check: no English domain taxonomy was loaded.');
+  const senses = Object.values(entriesByLanguage).flatMap(entries =>
+    Object.values(entries).flatMap(entry => entry.senses)
+  );
+  const labels = buildLabelIndex(taxonomiesByLanguage['en']);
+  const result = evaluateDomainCheck(uniqueSenseDomains(senses), labels, domainsRequested);
+  if (result.skipped) {
+    console.log('Skipping sense domain check: no domain directory was given.');
     return;
   }
+  const allStats = result.stats;
 
-  const labels = buildEnglishLabelIndex(taxonomiesByLanguage);
-  const allStats = checkSenseDomainConsistency(allSenseDomains(entriesByLanguage), labels);
-
-  const languageCount = Object.keys(entriesByLanguage).length;
-  console.log(
-    `Sense domain check (counts summed across all ${languageCount} output languages; ` +
-      `sense text is English in every language):`
-  );
+  console.log('Sense domain check (each sense counted once; sense text is English):');
   const columns = ['Taxonomy', 'Total', 'Matched', 'Mismatched', 'Missing code', 'Rate'];
   const rows = allStats.map(stats => [
     stats.taxonomy,
@@ -1309,33 +1290,33 @@ function checkSenseDomainsOrExit(
       );
   }
 
-  const failed = allStats.filter(stats => stats.mismatchRate > MAX_DOMAIN_MISMATCH_RATE);
-  if (failed.length > 0) {
-    const limit = `${(MAX_DOMAIN_MISMATCH_RATE * 100).toFixed(0)}%`;
-    const notLoaded = failed.filter(
-      stats => classifyConsistencyFailure(stats, labels) === 'not-loaded'
+  if (result.notLoaded.length === 0 && result.mismatched.length === 0) return;
+
+  for (const taxonomy of result.notLoaded) {
+    const count = allStats.find(stats => stats.taxonomy === taxonomy)?.total ?? 0;
+    const loadedLanguages = Object.keys(taxonomiesByLanguage).filter(
+      language => taxonomiesByLanguage[language][taxonomy]
     );
-    const mismatched = failed.filter(stats => !notLoaded.includes(stats));
-    for (const stats of notLoaded)
-      console.error(
-        `\nError: taxonomy "${stats.taxonomy}" was not loaded (no English labels found; check the ` +
-          `domain files and earlier parse errors), so none of its ${stats.total} sense domains ` +
-          `could be checked.`
-      );
-    if (mismatched.length > 0)
-      console.error(
-        `\nError: sense domain codes disagree with the taxonomy labels; the source data is probably ` +
-          `numbered out of sync. ${mismatched.map(stats => stats.taxonomy).join(', ')} exceeded ` +
-          `the ${limit} mismatch limit.`
-      );
-    console.error('No output files were written.');
-    // GitHub Actions workflow command, so the failure shows on the PR checks page
+    const cause =
+      loadedLanguages.length > 0
+        ? `it was loaded for ${loadedLanguages.join(', ')} but not English, and sense domain ` +
+          `text is English`
+        : 'check the domain files and earlier parse errors';
     console.error(
-      `::error::Sense domain consistency check failed: ` +
-        `${failed.map(stats => stats.taxonomy).join(', ')} exceeded the ${limit} mismatch limit`
+      `\nError: taxonomy "${taxonomy}" has no English labels (${cause}), so none of its ` +
+        `${count} sense domains could be checked.`
     );
-    process.exit(1);
   }
+  if (result.mismatched.length > 0)
+    console.error(
+      `\nError: sense domain codes disagree with the taxonomy labels; the source data is probably ` +
+        `numbered out of sync. ${result.mismatched.join(', ')} exceeded the ` +
+        `${(MAX_DOMAIN_MISMATCH_RATE * 100).toFixed(0)}% mismatch limit.`
+    );
+  console.error('No output files were written.');
+  // GitHub Actions workflow commands, so the failure shows on the PR checks page
+  for (const annotation of domainCheckAnnotations(result)) console.error(annotation);
+  process.exit(1);
 }
 
 /**
@@ -1675,7 +1656,7 @@ function main(): void {
 
   // Fail before writing anything if sense domains disagree with the taxonomy labels
   console.log(`\nChecking sense domains against the English taxonomy labels...`);
-  checkSenseDomainsOrExit(entriesByLanguage, taxonomiesByLanguage);
+  checkSenseDomainsOrExit(entriesByLanguage, taxonomiesByLanguage, options.domains !== undefined);
 
   // Finally, write output files
   console.log(

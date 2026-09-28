@@ -6,5 +6,5 @@ output-sdbh
 dist
 
 # Files
-english.db
-lexicon.db
+# SQLite DBs built by the import scripts (english.db, lexicon.db, lexicon-sdbg.db, ...)
+*.db

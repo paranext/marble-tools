@@ -13,22 +13,22 @@ Commands live in `README.md` ("Building the databases", "How it works"). Publish
 
 ## Procedure
 
-1. **Choose the code ref.** Build from `main`. If converter fixes the DB needs (for example, the sense-domain check) are only on an unmerged branch, say which ref you are using and why.
+1. **Choose the code ref.** Build from `main`. If converter fixes the DB needs are only on an unmerged branch, say which ref you are using and why.
 2. **Build.**
    - **Preferred:** run the `build-english-db.yml` workflow via `workflow_dispatch` on that ref: `gh workflow run build-english-db.yml -R paranext/marble-tools --ref <ref>`. It takes about 8 minutes and always uses upstream's default branch. Download the `english-database` artifact with `gh run download <run-id> -R paranext/marble-tools -n english-database -D <scratch>`.
-   - **Local:** fetch the sibling repos in the background, since fetch is slow. If `HEAD` is behind `origin/master`, ask the user to update, or archive `origin/master` into scratch as the README describes. Then run the README steps, including copying the English files into `english/`.
+   - **Local:** fetch the sibling repos in the background, since fetch is slow. If `HEAD` is behind `origin/master`, ask the user to update, or convert from an extract of `origin/master` as the README's "To convert upstream data" paragraph describes. Then copy the English files into `english/` and import, as in "Building the databases".
 3. **If a convert step fails the sense-domain check,** stop. See "Check failure" below.
 4. **Verify the DB you will ship.**
    - `select Id, Version from LexicalReferenceTexts` must show the upstream commit date for both dictionaries.
    - Decompress the currently shipped DB into scratch. Compare row counts per LexicalReferenceText for Entries, Senses, SenseOccurrences and SenseDomains, and explain any large change.
-   - Spot-check one verse through `SenseOccurrenceView` and `SenseDomainView`, for example EXO 20:12: `BookNum=2, ChapterNum=20, VerseNum=12`. Filter by reference, not by lemma: lemmas are not NFC (see the docs notes).
+   - Spot-check one verse, for example EXO 20:12: `SenseOccurrenceView o JOIN SenseDomainView d USING (SenseKey) WHERE o.BookNum=2 AND o.ChapterNum=20 AND o.VerseNum=12 AND d.BCP47Code='en'`. Filter by reference, not by lemma: lemmas are not NFC (see the docs notes).
 5. **Stage.** On a branch in `../dependencies`, replace the DB and checksum as `SOURCE.md` describes. Run `sha256sum` inside `lexical-db/` so the checksum file names the bare file. Commit, then **stop and ask** before pushing or opening a PR.
 
 ## Check failure
 
 The converter fails before writing anything. This means entries and taxonomy are numbered out of sync upstream; `docs/current_lexicon_specification.md` explains how that happens.
 
-- Do not raise the limit, drop `--domains`, or patch codes to get a DB out. The currently shipped DB stays in place.
+- Do not relax the check, drop `--domains`, or patch codes to get a DB out. The currently shipped DB stays in place.
 - Give the user the "Most frequent disagreements" list as an upstream issue for Reinier de Blois, and ask before posting it to Jira.
 - A "no English labels" failure means a domain file is missing or failed to parse. It is not a numbering problem.
 

@@ -14,10 +14,10 @@ This repo converts the private UBS MARBLE semantic dictionaries, SDBH (Hebrew) a
 
 ## Working here
 
-- Run `npm test`, `npm run lint` and `npx tsc --noEmit -p tsconfig.json` before committing. CI does not typecheck.
+- Run `npm test`, `npm run lint` and `npx tsc --noEmit -p tsconfig.json` before committing.
 - When a converter change is not meant to change output, prove it with `scripts/diff-output.sh`.
-- Do not move the sibling data checkouts (`../marble-lexicon`, `../marble-indexes`). `.claude/settings.json` denies checkout/reset/pull there. To get another revision, use `git archive`, as the README describes.
+- Do not move the sibling data checkouts (`../marble-lexicon`, `../marble-indexes`). `.claude/settings.json` denies the common state-changing git commands there, but only in the `git -C ../<repo>` form, so it does not catch every way of moving them. To get another revision, use `git archive`, as the README describes.
 - The docs cannot be trusted to be complete. Check structural assumptions against the data before relying on them. Record what you learn in the docs notes sections, or in a "From data inspection:" comment next to the code that depends on it.
-- If the sense-domain check fails, the fix belongs in the upstream data. Do not raise the limit or work around it in the converter. Report the disagreements to the user as an upstream issue for Reinier de Blois, the data owner. Keep the tone deferential and include file:line evidence.
-- Ask before posting to Jira. PR titles carry the Jira key (e.g. `PT-4547`).
-- A project hook runs prettier on each `src/**/*.ts` and `sql/*.sql` file you edit. `sql/schema.sql` is not prettier-clean yet, so the first edit to it also reformats unrelated lines. Commit that reformat separately.
+- If the sense-domain check fails, the fix belongs in the upstream data. Do not relax the check or work around it in the converter. Report the disagreements to the user as an upstream issue for Reinier de Blois, the data owner. Keep the tone deferential and include file:line evidence.
+- Ask before posting to Jira. PR titles carry the Jira key when the work has one (e.g. `PT-4547`).
+- A project hook runs prettier on each `src/**/*.ts` and `sql/*.sql` file you edit.

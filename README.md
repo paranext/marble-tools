@@ -52,7 +52,7 @@ npx tsc --noEmit -p tsconfig.json                # typecheck (no npm script)
 npm run format-sql                               # prettier on sql/**/*.sql
 ```
 
-CI (`.github/workflows/test.yml`) runs `npm test` and `npm run lint` on pushes and PRs to `main`. It does not typecheck, so run `tsc` yourself. The `Unknown book ID` warning in the jest output comes from a test that exercises that path on purpose.
+CI (`.github/workflows/test.yml`) runs `npm test` and `npm run lint` on pushes and PRs to `main`. `npm test` typechecks only the files the tests import, so run `tsc` to cover `src/convert-marble-lexicon.ts` and `src/import-lexicon-to-sqlite.ts`. The `Unknown book ID` warning in the jest output comes from a test that exercises that path on purpose.
 
 ### Building the databases
 
@@ -61,6 +61,7 @@ npm run convert-sdbh      # ../marble-lexicon/SDBH -> output-sdbh/lexicon_<lang>
 npm run convert-sdbg      # ../marble-lexicon/SDBG -> output-sdbg/lexicon_<lang>.xml (about 15s)
 
 # english.db (the DB that ships) is imported from english/, which the convert scripts do not update:
+mkdir -p english
 cp output-sdbg/lexicon_en.xml english/sdbg_en.xml
 cp output-sdbh/lexicon_en.xml english/sdbh_en.xml
 npm run import-english-to-sqlite
@@ -70,29 +71,33 @@ npm run import-to-sqlite  # all languages of both dictionaries -> lexicon.db (ta
 
 If you skip the copy step, `english.db` is built from whatever XML was last copied into `english/`. To check which source version a DB was built from, run `sqlite3 -readonly english.db "select Id, Version from LexicalReferenceTexts"`.
 
-To convert into a scratch directory or against another data location, run the converter directly. A fixed `--version` makes the output comparable between runs:
+To convert upstream data without moving your sibling checkouts, extract `origin/master` of both into a scratch directory and run the converter directly against the extract:
 
 ```bash
-npx ts-node src/convert-marble-lexicon.ts --dictionary-type SDBH --input ../marble-lexicon/SDBH \
-  --domains ../marble-lexicon/SDBH --marble-links ../marble-indexes/Full \
-  --output <dir> --version 2000-01-01T00:00:00Z > <dir>.log 2>&1
+git -C ../marble-lexicon fetch && git -C ../marble-indexes fetch
+mkdir -p <dir>
+git -C ../marble-lexicon archive origin/master SDBH SDBG | tar -x -C <dir>
+git -C ../marble-indexes archive origin/master Full | tar -x -C <dir>
+version=$(git -C ../marble-lexicon log -1 --format=%cd --date=iso-strict origin/master)
+npx ts-node src/convert-marble-lexicon.ts --dictionary-type SDBH --input <dir>/SDBH \
+  --domains <dir>/SDBH --marble-links <dir>/Full --output output-sdbh --version "$version" > <dir>/sdbh.log 2>&1
 ```
 
-To use upstream data without moving your sibling checkout, run `git -C ../marble-lexicon archive origin/master SDBH | tar -x -C <dir>` and point `--input`/`--domains` at the extracted copy.
+Repeat for SDBG with `output-sdbg`, then run the copy and import steps above. `$version` is upstream's commit date, which is what the shipped DB records. To make output comparable between runs, pass a fixed `--version 2000-01-01T00:00:00Z` instead, as `scripts/diff-output.sh` does.
 
 The logs run to tens of thousands of lines. Search them for `Sense domain check` to find the per-taxonomy summary. Thousands of `Skipping contextual meanings` and `Empty CONDomain code ... NO DATA YET` warnings are expected, because they mark upstream work in progress.
 
 ### Checking that a converter change preserves output
 
 ```bash
-scripts/diff-output.sh [-d SDBH|SDBG] [base-ref]
+scripts/diff-output.sh [-d SDBH|SDBG|both] [-o out-dir] [base-ref]
 ```
 
-The script converts with the code at `base-ref` (default: the merge-base with `main`) and with the working tree, using the same data and version, then compares the output XML. It exits 0 when the outputs are identical and 1 when they differ. Run it from a worktree too: it finds the data repos next to the main checkout, or you can set `MARBLE_LEXICON` and `MARBLE_INDEXES`.
+The script converts with the code at `base-ref` (default: the merge-base with `main`, or with `origin/main` when there is no local `main`) and with the working tree, using the same data and version, then compares the output XML. Outputs and logs go to `out-dir` (default: a new temp dir). It exits 0 when the outputs are identical, 1 when they differ and 2 on errors. Run it from a worktree too: it finds the data repos next to the main checkout, or you can set `MARBLE_LEXICON` and `MARBLE_INDEXES`, and it links the main checkout's `node_modules` into a worktree that has none.
 
 ## How it works
 
-1. `src/convert-marble-lexicon.ts` reads the MARBLE lexicon XML, adds occurrences from MARBLELinks, builds the semantic domain taxonomies, and writes one XML file per language. The output format is described in `xml/output.rnc`. The converter checks each sense's domain against the taxonomy label for its code before writing anything, and exits with an error if they disagree too often (see the "Notes on semantic domains" in `docs/current_lexicon_specification.md`).
+1. `src/convert-marble-lexicon.ts` reads the MARBLE lexicon XML, adds occurrences from MARBLELinks, builds the semantic domain taxonomies, and writes one XML file per language. The output format is described in `xml/output.rnc`. The converter checks each sense's domain against the taxonomy label for its code before writing anything, and exits with an error if any disagree (see the "Notes on semantic domains" in `docs/current_lexicon_specification.md`).
 2. `src/import-lexicon-to-sqlite.ts` loads that XML into SQLite using `sql/schema.sql`. The views at the end of the schema are what the lexical service in paranext-core queries.
 3. `.github/workflows/build-english-db.yml` runs both steps against the upstream default branch of the MARBLE repos, on PRs to `main` and on manual dispatch, and uploads `english.db` as an artifact. That artifact is published through [paranext/dependencies](https://github.com/paranext/dependencies) as described in its `lexical-db/SOURCE.md`.
 

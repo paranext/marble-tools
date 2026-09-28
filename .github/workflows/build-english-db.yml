@@ -18,10 +18,19 @@ jobs:
           git clone https://${{ secrets.MARBLE_REPO_TOKEN }}@github.com/ubsicap/marble-lexicon.git ../marble-lexicon
           git clone https://${{ secrets.MARBLE_REPO_TOKEN }}@github.com/ubsicap/marble-indexes.git ../marble-indexes
 
-      - name: Setup Node.js
+      - name: Read package.json
+        id: package_json
+        uses: zoexx/github-action-json-file-properties@1.0.6
+        with:
+          file_path: 'package.json'
+
+      - name: Install Volta and toolchain
+        uses: volta-cli/action@v4
+
+      - name: Install Node and NPM
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ fromJson(steps.package_json.outputs.volta).node }}
           cache: 'npm'
 
       - name: Install dependencies

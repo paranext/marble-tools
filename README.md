@@ -29,11 +29,7 @@ Not all of these repositories may be used in scripts at this time. Those are jus
    npm install
    ```
 
-   The prebuilt `sqlite3` binary for Linux needs glibc 2.38 or newer (Ubuntu 24.04+). On older distros, such as Ubuntu 22.04, loading it fails with `GLIBC_2.38' not found`. Build it from source instead, which needs Python, make and a C++ compiler:
-
-   ```
-   npm rebuild sqlite3 --build-from-source
-   ```
+   The prebuilt `sqlite3` binary for Linux needs glibc 2.38 or newer (Ubuntu 24.04+). On older distros, such as Ubuntu 22.04, the install detects this and builds `sqlite3` from source automatically, which needs Python, make and a C++ compiler.
 
 3. **Run scripts as needed**:
    ```

@@ -1,5 +1,4 @@
 -- Lexicon schema for SQLite database
-
 -- Main table for lexical reference texts
 CREATE TABLE IF NOT EXISTS LexicalReferenceTexts (
   LexicalReferenceTextKey INTEGER PRIMARY KEY,
@@ -156,9 +155,13 @@ CREATE TABLE IF NOT EXISTS SenseDomains (
 -- Add indexes only for columns that will be frequently searched but aren't already
 -- indexed as part of a UNIQUE constraint or PRIMARY KEY
 CREATE INDEX IF NOT EXISTS idx_entries_lemma ON Entries (Lemma);
+
 CREATE INDEX IF NOT EXISTS idx_entryoccurrences_entry ON EntryOccurrences (EntryKey);
+
 CREATE INDEX IF NOT EXISTS idx_entryoccurrences_reference ON EntryOccurrences (BookNum, ChapterNum, VerseNum);
+
 CREATE INDEX IF NOT EXISTS idx_senseoccurrences_sense ON SenseOccurrences (SenseKey);
+
 CREATE INDEX IF NOT EXISTS idx_senseoccurrences_reference ON SenseOccurrences (BookNum, ChapterNum, VerseNum);
 
 -- Create a view for easy access to sense occurrence data with relevant joins
@@ -168,7 +171,7 @@ SELECT
   s.Id AS SenseId,
   lrt.Id AS LexiconId,
   lrt.LexicalReferenceTextKey,
-  lrt.Version as LexiconVersion,
+  lrt.Version AS LexiconVersion,
   c.Id AS SourceTextId,
   e.Lemma,
   e.Id AS EntryId,
@@ -198,7 +201,8 @@ SELECT
 FROM
   SenseDomains sd
   JOIN Taxonomies t ON sd.TaxonomyKey = t.TaxonomyKey
-  LEFT JOIN TaxonomyDomains td ON sd.DomainCode = td.DomainCode AND sd.TaxonomyKey = td.TaxonomyKey
+  LEFT JOIN TaxonomyDomains td ON sd.DomainCode = td.DomainCode
+  AND sd.TaxonomyKey = td.TaxonomyKey
   LEFT JOIN TaxonomyDomainLabels tdl ON td.TaxonomyDomainKey = tdl.TaxonomyDomainKey
   LEFT JOIN Languages l ON tdl.LanguageKey = l.LanguageKey;
 
@@ -209,7 +213,7 @@ SELECT
   e.Id AS EntryId,
   lrt.Id AS LexiconId,
   lrt.LexicalReferenceTextKey,
-  lrt.Version as LexiconVersion,
+  lrt.Version AS LexiconVersion,
   e.Lemma,
   c.Id AS SourceTextId,
   eo.BookNum,
@@ -225,14 +229,15 @@ FROM
 -- Create a view for easy access to entry domain data with relevant joins
 CREATE VIEW IF NOT EXISTS EntryDomainView AS
 SELECT
-    ed.EntryKey,
-    t.Id AS TaxonomyId,
-    ed.DomainCode,
-    tdl.Label,
-    l.BCP47Code
-  FROM
-    EntryDomains ed
-    JOIN Taxonomies t ON ed.TaxonomyKey = t.TaxonomyKey
-    LEFT JOIN TaxonomyDomains td ON ed.DomainCode = td.DomainCode AND ed.TaxonomyKey = td.TaxonomyKey
-    LEFT JOIN TaxonomyDomainLabels tdl ON td.TaxonomyDomainKey = tdl.TaxonomyDomainKey
-    LEFT JOIN Languages l ON tdl.LanguageKey = l.LanguageKey;
+  ed.EntryKey,
+  t.Id AS TaxonomyId,
+  ed.DomainCode,
+  tdl.Label,
+  l.BCP47Code
+FROM
+  EntryDomains ed
+  JOIN Taxonomies t ON ed.TaxonomyKey = t.TaxonomyKey
+  LEFT JOIN TaxonomyDomains td ON ed.DomainCode = td.DomainCode
+  AND ed.TaxonomyKey = td.TaxonomyKey
+  LEFT JOIN TaxonomyDomainLabels tdl ON td.TaxonomyDomainKey = tdl.TaxonomyDomainKey
+  LEFT JOIN Languages l ON tdl.LanguageKey = l.LanguageKey;

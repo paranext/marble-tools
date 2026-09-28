@@ -19,7 +19,7 @@
     "commander": "^11.1.0",
     "fs-extra": "^10.0.0",
     "sqlite": "^5.0.1",
-    "sqlite3": "^5.1.6",
+    "sqlite3": "^6.0.1",
     "xml2js": "^0.6.2"
   },
   "devDependencies": {
@@ -48,5 +48,10 @@
     "typescript-eslint": "^8.32.0"
   },
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "overrides": {
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^9.0.7"
+    }
+  }
 }

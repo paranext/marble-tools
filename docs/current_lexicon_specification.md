@@ -220,7 +220,7 @@ These are all fields organized by hierarchic level:
 
 ## Notes on semantic domains
 
-Not part of Reinier's document. These notes record later clarifications from Reinier and how the data in marble-lexicon (checked at commit 018b05a, 2026-09-25) differs from the rendering notes above.
+Not part of Reinier's document. These notes record later clarifications from Reinier and how the data in marble-lexicon (checked at commit 26d7112, 2026-09-28) differs from the rendering notes above.
 
 ### Relation markers
 
@@ -234,13 +234,13 @@ The first ellipsis example above ("**089.056** ... signifying that an event has 
 
 In the current data:
 
-- The example codes above use older numbering. Human is now **082** and Divine is **050** in SDBH-DOMAINS2.XML.
-- Most extensions of meaning use the **Source** and **SourceCode** attributes, with only the extended-to domain as the text, e.g. `<CONDomain Code="050" Source="Human" SourceCode="090">Divine</CONDomain>`. SourceCode uses older numbering too (here 090, while Human is 082), so it does not identify the source domain reliably. The converter uses neither attribute.
-- Only a few extensions are written inline in the code, e.g. `002003002023>002001002006` for **Serve>Diligent**. The converter keeps the target domain.
-- Few relations are coded: in SDBH, 12 two-sided codes such as `082.050` (**Human … Divine**) and 15 one-sided codes such as `082.` (**Human …**). About 2,300 relation annotations have an empty Code, so the converter drops them.
+- The example codes above use older numbering. Human is now **084** and Divine is **051** in SDBH-DOMAINS2.XML.
+- Extensions of meaning use the **Source** and **SourceCode** attributes, with only the extended-to domain as the text, e.g. `<CONDomain Code="051" Source="Human" SourceCode="084">Divine</CONDomain>`. The converter uses neither attribute.
+- No extensions are written inline in the code (such as `002003002023>002001002006` for **Serve>Diligent**). The converter would keep the target domain.
+- Relations are coded: in SDBH, 1,358 two-sided codes such as `084.051` (**Human … Divine**) and 1,844 one-sided codes such as `084.` (**Human …**). The converter keeps each coded domain but not the relation between them.
 
 ### Parts
 
-From Reinier: Parts is a semantic domain of its own. **Parts: Trees** covers terms such as bark, branch and leaf, as opposed to **Trees**, which covers kinds of trees.
+From Reinier: Parts was a semantic domain of its own. **Parts: Trees** covered terms such as bark, branch and leaf, as opposed to **Trees**, which covers kinds of trees.
 
-In the current data there are no `001002:` codes, and SDBH-DOMAINS1.XML has no Parts domain (001002 is now Natural World). A **Parts: X** domain is coded with X's own code (e.g. **Parts: Trees** is `001002007002`, the code for Trees) or with an empty Code (e.g. **Parts: Creatures**). The converter therefore indexes Parts: X under X and keeps "Parts:" only in the English domain text.
+Reinier has since removed the **Parts:** prefix entirely. The current data has no `001002:` codes and no **Parts: X** domain text: former **Parts: X** domains are now plain **X** with X's own code, and body parts have their own domain, **Body Parts** (`001001005`). The rendering note above about `001002:` codes no longer applies.

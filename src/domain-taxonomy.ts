@@ -151,26 +151,15 @@ export interface ConsistencyStats {
   examples: { code: string; value: string; label?: string; count: number }[];
 }
 
-/**
- * The highest share of a taxonomy's sense domains allowed to disagree with the taxonomy labels.
- * A handful of residual inconsistencies are expected in upstream data, but the failure mode
- * being guarded against (entries and taxonomy numbered out of sync, as in PT-4547) shifts tens
- * of percent of sense domains, so a low threshold separates the two cleanly.
- */
-export const MAX_DOMAIN_MISMATCH_RATE = 0.01;
-
 const MAX_EXAMPLES = 10;
-const PARTS_PREFIX = 'parts:';
 const RELATION_SEPARATOR = /…|\.\.\.|>/;
 
 /**
  * Whether the domain text on a sense agrees with the taxonomy label for its code. Compares
  * case-insensitively after trimming. Domain text can be more than a single label (see the
  * semantic domain notes in docs/current_lexicon_specification.md):
- * - "Parts: X" names the parts of X (bark, branch, leaf for Trees) rather than kinds of X. The
- *   code is X's own code, so the prefix is dropped before comparing.
  * - "A … B" is a relation between an agent A and an object B; either side may be empty
- *   ("Human …", "… Human"). A code such as "082.050" lists the two codes in the same order.
+ *   ("Human …", "… Human"). A code such as "084.051" lists the two codes in the same order.
  * - "A>B" is an extension of meaning, a mapping from source domain A to target domain B. The
  *   code keeps only B.
  * The value matches when any non-empty part equals the label. Pairing each code with its own part
@@ -178,11 +167,10 @@ const RELATION_SEPARATOR = /…|\.\.\.|>/;
  * them, and a code shifted out of sync also disagrees on its many single-label senses.
  */
 export function domainValueMatchesLabel(value: string, label: string): boolean {
-  let normalizedValue = value.trim().toLowerCase();
   const normalizedLabel = label.trim().toLowerCase();
-  if (normalizedValue.startsWith(PARTS_PREFIX))
-    normalizedValue = normalizedValue.slice(PARTS_PREFIX.length).trim();
-  return normalizedValue
+  return value
+    .trim()
+    .toLowerCase()
     .split(RELATION_SEPARATOR)
     .map(part => part.trim())
     .some(part => part !== '' && part === normalizedLabel);
@@ -303,16 +291,18 @@ export interface DomainCheckResult {
   /** No domain directory was given, so there was nothing to check against */
   skipped: boolean;
   stats: ConsistencyStats[];
-  /** Taxonomies over the mismatch limit because no English labels were loaded for them */
+  /** Taxonomies that failed because no English labels were loaded for them */
   notLoaded: string[];
-  /** Taxonomies over the mismatch limit because their English labels disagree with sense text */
+  /** Taxonomies that failed because their English labels disagree with sense text */
   mismatched: string[];
 }
 
 /**
- * Decide whether the sense domains pass the consistency check. Skips only when domains were not
- * requested. When they were, a missing English taxonomy is not a reason to skip: every sense
- * domain in it counts as a missing code, so the taxonomy fails as not loaded.
+ * Decide whether the sense domains pass the consistency check. A taxonomy fails if any sense
+ * domain in it is mismatched or has a missing code: even one code shifted out of sync shows users
+ * the wrong domain, so there is no tolerance. Skips only when domains were not requested. When
+ * they were, a missing English taxonomy is not a reason to skip: every sense domain in it counts
+ * as a missing code, so the taxonomy fails as not loaded.
  */
 export function evaluateDomainCheck(
   refs: Iterable<SenseDomainRef>,
@@ -322,7 +312,7 @@ export function evaluateDomainCheck(
   if (!domainsRequested) return { skipped: true, stats: [], notLoaded: [], mismatched: [] };
 
   const stats = checkSenseDomainConsistency(refs, labels);
-  const failed = stats.filter(s => s.mismatchRate > MAX_DOMAIN_MISMATCH_RATE);
+  const failed = stats.filter(s => s.mismatched + s.missingCode > 0);
   const notLoaded = failed.filter(s => classifyConsistencyFailure(s, labels) === 'not-loaded');
   return {
     skipped: false,
@@ -334,7 +324,6 @@ export function evaluateDomainCheck(
 
 /** GitHub Actions workflow commands for a failed check, one per kind of failure */
 export function domainCheckAnnotations(result: DomainCheckResult): string[] {
-  const limit = `${(MAX_DOMAIN_MISMATCH_RATE * 100).toFixed(0)}%`;
   const annotations: string[] = [];
   if (result.notLoaded.length > 0)
     annotations.push(
@@ -343,8 +332,8 @@ export function domainCheckAnnotations(result: DomainCheckResult): string[] {
     );
   if (result.mismatched.length > 0)
     annotations.push(
-      `::error::Sense domain check failed: ${result.mismatched.join(', ')} exceeded the ` +
-        `${limit} mismatch limit`
+      `::error::Sense domain check failed: ${result.mismatched.join(', ')} ` +
+        `(sense domain text disagrees with the taxonomy labels)`
     );
   return annotations;
 }

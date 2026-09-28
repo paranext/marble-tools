@@ -200,10 +200,6 @@ describe('domainValueMatchesLabel', () => {
     expect(domainValueMatchesLabel('  Land ', 'Land')).toBe(true);
   });
 
-  test('strips a leading "Parts: " from the value', () => {
-    expect(domainValueMatchesLabel('Parts: Buildings', 'Buildings')).toBe(true);
-  });
-
   test('a relation value matches when any separated part equals the label', () => {
     expect(domainValueMatchesLabel('Divine … Human', 'Divine')).toBe(true);
     expect(domainValueMatchesLabel('Divine … Human', 'Human')).toBe(true);
@@ -397,10 +393,29 @@ describe('evaluateDomainCheck', () => {
     });
   });
 
-  test('passes when every taxonomy is within the mismatch limit', () => {
+  test('passes when every sense domain matches its label', () => {
     const result = evaluateDomainCheck([ref('SDBH-Lexical', '1', 'Objects')], labels, true);
     expect(result).toMatchObject({ skipped: false, notLoaded: [], mismatched: [] });
     expect(result.stats).toHaveLength(1);
+  });
+
+  test('fails a taxonomy on a single mismatch among many matches', () => {
+    const refs = [
+      ...Array.from({ length: 999 }, () => ref('SDBH-Lexical', '1', 'Objects')),
+      ref('SDBH-Lexical', '2', 'Objects'),
+    ];
+    expect(evaluateDomainCheck(refs, labels, true)).toMatchObject({
+      notLoaded: [],
+      mismatched: ['SDBH-Lexical'],
+    });
+  });
+
+  test('fails a taxonomy on a single code missing from the taxonomy', () => {
+    const refs = [ref('SDBH-Lexical', '1', 'Objects'), ref('SDBH-Lexical', '3', 'Places')];
+    expect(evaluateDomainCheck(refs, labels, true)).toMatchObject({
+      notLoaded: [],
+      mismatched: ['SDBH-Lexical'],
+    });
   });
 
   test('fails every taxonomy as not loaded when domains were requested but none are English', () => {
@@ -433,18 +448,18 @@ describe('domainCheckAnnotations', () => {
       })
     ).toEqual([
       '::error::Sense domain check failed: SDBH-Contextual not loaded (no English domain labels)',
-      '::error::Sense domain check failed: SDBH-Lexical, SDBG-Lexical exceeded the 1% mismatch limit',
+      '::error::Sense domain check failed: SDBH-Lexical, SDBG-Lexical (sense domain text disagrees with the taxonomy labels)',
     ]);
   });
 
-  test('does not blame the mismatch limit when a taxonomy was only not loaded', () => {
+  test('does not blame label disagreement when a taxonomy was only not loaded', () => {
     const annotations = domainCheckAnnotations({
       ...base,
       notLoaded: ['SDBH-Lexical'],
       mismatched: [],
     });
     expect(annotations).toHaveLength(1);
-    expect(annotations[0]).not.toContain('mismatch limit');
+    expect(annotations[0]).not.toContain('disagrees');
   });
 
   test('is empty when nothing failed', () => {

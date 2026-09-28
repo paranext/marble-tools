@@ -37,7 +37,6 @@ import {
   DomainRecord,
   DomainTreeNode,
   evaluateDomainCheck,
-  MAX_DOMAIN_MISMATCH_RATE,
   parseHasSubDomains,
   SenseType,
   uniqueSenseDomains,
@@ -1119,7 +1118,7 @@ function processDomainFile(
     records.push({
       code: rawCode,
       displayCode: codes[0],
-      level: levelText ? parseInt(levelText, 10) : undefined,
+      level: levelText?.trim() ? parseInt(levelText, 10) : undefined,
       hasSubDomains: parseHasSubDomains(hasSubDomainsText),
       element: domain,
     });
@@ -1238,10 +1237,19 @@ function removeDuplicateOccurrences(entriesByLanguage: EntriesByLanguage): void 
 }
 
 /**
+ * Format a mismatch rate as a percentage. Any mismatch fails the check, so a nonzero rate never
+ * rounds down to 0.00%.
+ */
+function formatMismatchRate(rate: number): string {
+  if (rate > 0 && rate < 0.0001) return '<0.01%';
+  return `${(rate * 100).toFixed(2)}%`;
+}
+
+/**
  * Check that the domain text on every sense agrees with the English taxonomy label for its code,
- * print a summary, and exit with an error if any taxonomy disagrees too often. Sense domain text is
- * English in every language, so all languages are checked against the English labels. This guards
- * against source snapshots whose entries and taxonomy are numbered out of sync (PT-4547).
+ * print a summary, and exit with an error if any sense domain disagrees. Sense domain text is English
+ * in every language, so all languages are checked against the English labels. This guards against
+ * source snapshots whose entries and taxonomy are numbered out of sync (PT-4547).
  */
 function checkSenseDomainsOrExit(
   entriesByLanguage: EntriesByLanguage,
@@ -1267,7 +1275,7 @@ function checkSenseDomainsOrExit(
     String(stats.matched),
     String(stats.mismatched),
     String(stats.missingCode),
-    `${(stats.mismatchRate * 100).toFixed(2)}%`,
+    formatMismatchRate(stats.mismatchRate),
   ]);
   const widths = columns.map((column, i) =>
     Math.max(column.length, ...rows.map(row => row[i].length))
@@ -1309,9 +1317,9 @@ function checkSenseDomainsOrExit(
   }
   if (result.mismatched.length > 0)
     console.error(
-      `\nError: sense domain codes disagree with the taxonomy labels; the source data is probably ` +
-        `numbered out of sync. ${result.mismatched.join(', ')} exceeded the ` +
-        `${(MAX_DOMAIN_MISMATCH_RATE * 100).toFixed(0)}% mismatch limit.`
+      `\nError: sense domain codes in ${result.mismatched.join(', ')} disagree with the ` +
+        `taxonomy labels; the source data is probably numbered out of sync. Paratext shows the ` +
+        `label that belongs to the code, so any disagreement would show users the wrong domain.`
     );
   console.error('No output files were written.');
   // GitHub Actions workflow commands, so the failure shows on the PR checks page
@@ -1573,6 +1581,12 @@ function main(): void {
     process.exit(1);
   }
 
+  // An empty --domains value fails here too, rather than silently skipping domains
+  if (options.domains !== undefined && !fs.existsSync(options.domains)) {
+    console.error(`Error: Domains directory '${options.domains}' does not exist.`);
+    process.exit(1);
+  }
+
   console.log(`Starting lexicon conversion...`);
   console.log(`Dictionary type: ${dictionaryType}`);
   console.log(`Input directory: ${options.input}`);
@@ -1607,7 +1621,7 @@ function main(): void {
   );
 
   // Next, process domain files to build taxonomies if provided
-  if (options.domains && fs.existsSync(options.domains)) {
+  if (options.domains) {
     console.log(`\nStep 3: Processing domain files to build taxonomies...`);
     const processDomainsStart = Date.now();
     processDomainFiles(options.domains, taxonomiesByLanguage, dictionaryType);
@@ -1615,12 +1629,12 @@ function main(): void {
       `Domain processing completed in ${((Date.now() - processDomainsStart) / 1000).toFixed(2)} seconds.`
     );
   } else {
-    console.log(`\nSkipping domain processing: No domain directory provided or it does not exist.`);
+    console.log(`\nSkipping domain processing: No domain directory provided.`);
   }
 
   // Next, remove empty entries and senses
   console.log(
-    `\nStep ${options.domains && fs.existsSync(options.domains) ? '4' : '3'}: Removing empty entries and senses...`
+    `\nStep ${options.domains ? '4' : '3'}: Removing empty entries and senses...`
   );
   const removeStart = Date.now();
   const removalStats = removeEmptyEntriesAndSenses(entriesByLanguage);
@@ -1660,7 +1674,7 @@ function main(): void {
 
   // Finally, write output files
   console.log(
-    `\nStep ${options.domains && fs.existsSync(options.domains) ? '5' : '4'}: Writing output files...`
+    `\nStep ${options.domains ? '5' : '4'}: Writing output files...`
   );
   const writeStart = Date.now();
 

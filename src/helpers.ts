@@ -388,7 +388,7 @@ export function transformDomainCode(code: string): string[] {
   if (!code) return [];
 
   // Relation codes (see the semantic domain notes in docs/current_lexicon_specification.md): a
-  // period marks an agent … object relation, e.g. 082.050 is Human … Divine, and 082. is Human …
+  // period marks an agent … object relation, e.g. 084.051 is Human … Divine, and 084. is Human …
   // (the empty side has no code). A two-sided code yields both domains. We don't represent the
   // relation itself: the model has no place for it, and it's not clear how the ellipsis would be
   // shown for non-Latin scripts.
@@ -399,12 +399,11 @@ export function transformDomainCode(code: string): string[] {
   }
 
   // Everything after the first non-digit is kept, which covers the remaining forms:
-  // - A one-sided relation (082. or .082) keeps its one code.
+  // - A one-sided relation (084. or .084) keeps its one code.
   // - An extension of meaning written inline, e.g. 002003002023>002001002006 (Serve>Diligent),
   //   keeps only the target domain.
   // - The spec describes Parts codes as 001002: followed by the domain, e.g. 001002:001003 for
-  //   Parts: Vegetation, which would keep only the domain. Current data has no such codes: a
-  //   "Parts: X" domain is coded with X's own code, so it is indexed under X.
+  //   Parts: Vegetation, which would keep only the domain. Current data has no such codes.
 
   // If there are non-digit characters, keeping only characters after the first non-digit
   let updatedCode = code;

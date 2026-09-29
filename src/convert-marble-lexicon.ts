@@ -29,6 +29,18 @@ import {
   SENSE_PREFIX,
   transformDomainCode,
 } from './helpers';
+import {
+  buildDomainTree,
+  buildLabelIndex,
+  classifyDomainFile,
+  domainCheckAnnotations,
+  DomainRecord,
+  DomainTreeNode,
+  evaluateDomainCheck,
+  parseHasSubDomains,
+  SenseType,
+  uniqueSenseDomains,
+} from './domain-taxonomy';
 
 // Define interfaces for our data structures
 interface Occurrence {
@@ -77,6 +89,12 @@ interface Taxonomy {
   id: string;
   title: string;
   subDomains: SubDomain[];
+}
+
+/** A domain from a taxonomy file, with what is needed to output it */
+interface DomainFileRecord extends DomainRecord {
+  displayCode: string;
+  element: Element;
 }
 
 interface TaxonomiesByLanguage {
@@ -355,7 +373,9 @@ function processFile(
     return Array.from(elements);
   }
 
-  // Helper function to extract domain codes
+  // Extract the domain codes and English domain text. The Source and SourceCode attributes, which
+  // name the source domain of an extension of meaning (Source > Domain), are not used, so only the
+  // extended-to domain is kept.
   function extractDomains(
     container: Element,
     taxonomy: string,
@@ -1014,11 +1034,19 @@ function processDomainFiles(
   taxonomiesByLanguage: TaxonomiesByLanguage,
   dictionaryType: 'SDBG' | 'SDBH'
 ): void {
-  // Look for SDBG-DOMAINS*.XML or SDBH-DOMAINS*.XML files
-  const prefix = dictionaryType === DICTIONARY_TYPE.GREEK ? 'SDBG-DOMAINS' : 'SDBH-DOMAINS';
-  const files = fs
-    .readdirSync(inputDir)
-    .filter(filename => filename.toUpperCase().startsWith(prefix) && filename.endsWith('.XML'));
+  // Look for exactly SDBG-DOMAINS1/2.XML or SDBH-DOMAINS1/2.XML. Upstream has shipped stray
+  // copies (e.g. "SDBH-DOMAINS1 - Copy.XML") alongside the real files, so anything else that
+  // starts with the prefix is skipped with a warning rather than processed. Non-XML sidecars
+  // (e.g. SDBH-DOMAINS1.JSON) are skipped silently.
+  const prefix = `${dictionaryType}-DOMAINS`;
+  const files: { filename: string; senseType: SenseType }[] = [];
+  for (const filename of fs.readdirSync(inputDir)) {
+    // From Reinier: DOMAINS1.XML is for lexical domains and DOMAINS2.XML is for contextual domains
+    const senseType = classifyDomainFile(filename, dictionaryType);
+    if (senseType) files.push({ filename, senseType });
+    else if (filename.toUpperCase().startsWith(prefix) && filename.toUpperCase().endsWith('.XML'))
+      console.warn(`Ignoring unrecognized domain file ${filename} in ${inputDir}`);
+  }
 
   if (files.length === 0) {
     console.warn(`No domain files found with prefix ${prefix} in ${inputDir}`);
@@ -1027,10 +1055,10 @@ function processDomainFiles(
 
   console.log(`Found ${files.length} domain files to process`);
 
-  for (const filename of files) {
+  for (const { filename, senseType } of files) {
     const filePath = path.join(inputDir, filename);
     try {
-      processDomainFile(filePath, dictionaryType, taxonomiesByLanguage);
+      processDomainFile(filePath, senseType, dictionaryType, taxonomiesByLanguage);
     } catch (e) {
       console.error(`Error processing domain file ${filePath}: ${e}`);
     }
@@ -1046,75 +1074,68 @@ function processDomainFiles(
  */
 function processDomainFile(
   filePath: string,
+  senseType: SenseType,
   dictionaryType: 'SDBG' | 'SDBH',
   taxonomiesByLanguage: TaxonomiesByLanguage
 ): void {
-  // From Reinier: DOMAINS1.XML is for lexical domains and DOMAINS2.XML is for contextual domains
-  const senseType = filePath.includes('1') ? 'Lexical' : 'Contextual';
-
   const xmlContent = fs.readFileSync(filePath, 'utf8');
   const parser = new DOMParser();
   const doc = parser.parseFromString(xmlContent, 'text/xml');
 
   // Get all semantic domains
+  const fileName = path.basename(filePath);
   const semanticDomains = doc.getElementsByTagName('SemanticDomain');
   console.log(
-    `Found ${semanticDomains.length} semantic domains in ${path.basename(filePath)} for ${senseType} domains`
+    `Found ${semanticDomains.length} semantic domains in ${fileName} for ${senseType} domains`
   );
 
-  // Map to store domains by code
-  const domainsByCode: Record<string, Element> = {};
-  const domainsByLevel: Record<string, Element[]> = {};
-  const topLevelDomainCodes: string[] = [];
+  const records: DomainFileRecord[] = [];
 
-  // First pass: collect all domains and organize them by level
+  // Collect the domains in source order
   for (let i = 0; i < semanticDomains.length; i++) {
     const domain = semanticDomains[i] as Element;
     const codeElement = domain.getElementsByTagName('Code')[0];
 
     if (!codeElement) {
-      console.warn(`Semantic domain #${i} has no Code element in ${path.basename(filePath)}`);
+      console.warn(`Semantic domain #${i} has no Code element in ${fileName}`);
       continue;
     }
 
-    const codes = transformDomainCode(codeElement.textContent || '');
+    const rawCode = (codeElement.textContent || '').trim();
+    const codes = transformDomainCode(rawCode);
     if (!codes || codes.length === 0) {
-      console.warn(`Semantic domain #${i} has empty Code in ${path.basename(filePath)}`);
+      console.warn(`Semantic domain #${i} has empty Code in ${fileName}`);
       continue;
     }
 
     if (codes.length !== 1) {
-      console.warn(
-        `Semantic domain #${i} has multiple codes (${codes.join(', ')}) in ${path.basename(filePath)}`
-      );
+      console.warn(`Semantic domain #${i} has multiple codes (${codes.join(', ')}) in ${fileName}`);
       continue;
     }
 
-    const code = codes[0];
-    domainsByCode[code] = domain;
-
-    const levelElement = domain.getElementsByTagName('Level')[0];
-    const level = levelElement?.textContent || '0';
-
-    if (!domainsByLevel[level]) {
-      domainsByLevel[level] = [];
-    }
-
-    domainsByLevel[level].push(domain);
-
-    // Keep track of top-level domains (level 1)
-    if (level === '1') {
-      topLevelDomainCodes.push(code);
-    }
+    const levelText = domain.getElementsByTagName('Level')[0]?.textContent;
+    const hasSubDomainsText = domain.getElementsByTagName('HasSubDomains')[0]?.textContent;
+    records.push({
+      code: rawCode,
+      displayCode: codes[0],
+      level: levelText?.trim() ? parseInt(levelText, 10) : undefined,
+      hasSubDomains: parseHasSubDomains(hasSubDomainsText),
+      element: domain,
+    });
   }
 
-  // Process for each language
-  const processedLanguages = new Set<string>();
+  // From data inspection: <HasSubDomains> is unreliable. Several parents upstream (e.g. 001001
+  // Beings) say false even though child domains exist, and following the flag dropped whole
+  // subtrees (People, Animals). The codes themselves are consistent in every snapshot: each code
+  // longer than 3 digits has its parent (the code minus its last 3 digits) in the same file. So
+  // the hierarchy is built from the code structure, and <Level>/<HasSubDomains> are only checked.
+  const { roots, warnings } = buildDomainTree(records);
+  for (const warning of warnings) console.warn(`${fileName}: ${warning.message}`);
 
   // Identify all available languages across all domains
-  for (const code in domainsByCode) {
-    const domain = domainsByCode[code];
-    const localizationsElement = domain.getElementsByTagName('SemanticDomainLocalizations')[0];
+  const processedLanguages = new Set<string>();
+  for (const { element } of records) {
+    const localizationsElement = element.getElementsByTagName('SemanticDomainLocalizations')[0];
 
     if (!localizationsElement) {
       continue;
@@ -1143,87 +1164,21 @@ function processDomainFile(
     taxonomiesByLanguage[languageCode][taxonomyId] = {
       id: taxonomyId,
       title: `${senseType} Semantic Domains for ${dictionaryType === DICTIONARY_TYPE.GREEK ? 'Greek' : 'Hebrew'}`,
-      subDomains: [],
+      subDomains: roots.map(root => toSubDomain(root, languageCode)),
     };
-
-    // Build top-level domains first
-    for (const topLevelCode of topLevelDomainCodes) {
-      const domain = domainsByCode[topLevelCode];
-      const label = getLabelForLanguage(domain, languageCode);
-
-      // Create top-level subdomain
-      const subDomain: SubDomain = {
-        code: topLevelCode,
-        label,
-        subDomains: [],
-      };
-
-      // Build hierarchy for this top-level domain by recursively adding child domains
-      buildDomainHierarchy(subDomain, topLevelCode, languageCode, domainsByCode, 2);
-
-      // Add to taxonomy
-      taxonomiesByLanguage[languageCode][taxonomyId].subDomains.push(subDomain);
-    }
   }
 
   console.log(`Processed ${processedLanguages.size} languages for ${senseType} domain taxonomy`);
 
   /**
-   * Recursively builds a domain hierarchy starting from a parent domain
+   * Convert a domain tree node (and its descendants) to the output structure for one language
    */
-  function buildDomainHierarchy(
-    parentDomain: SubDomain,
-    parentCode: string,
-    languageCode: string,
-    domainsMap: Record<string, Element>,
-    currentLevel: number
-  ): void {
-    // Find all domains that start with the parent code and are at the current level
-    // For example, if parentCode is "001" and currentLevel is 2, find all codes like "001001", "001002", etc.
-    Object.keys(domainsMap)
-      .filter(code => {
-        // The code must start with parent code but not be the parent code itself
-        if (code === parentCode || !code.startsWith(`${parentCode}.`)) return false;
-
-        // Check if this is a direct child (next level)
-        const domain = domainsMap[code];
-        const levelElement = domain.getElementsByTagName('Level')[0];
-        const level = parseInt(levelElement?.textContent || '0');
-
-        return level === currentLevel;
-      })
-      .forEach(childCode => {
-        const childDomain = domainsMap[childCode];
-        const childLabel = getLabelForLanguage(childDomain, languageCode);
-
-        // Create child subdomain
-        const childSubDomain: SubDomain = {
-          code: childCode,
-          label: childLabel,
-          subDomains: [],
-        };
-
-        // Check if we need to go deeper (only if this domain has subdomains)
-        const hasSubDomainsElement = childDomain.getElementsByTagName('HasSubDomains')[0];
-        const hasSubDomains = hasSubDomainsElement?.textContent === 'true';
-
-        if (hasSubDomains) {
-          buildDomainHierarchy(
-            childSubDomain,
-            childCode,
-            languageCode,
-            domainsMap,
-            currentLevel + 1
-          );
-        }
-
-        // Add this child to the parent's subdomains
-        if (!parentDomain.subDomains) {
-          parentDomain.subDomains = [];
-        }
-
-        parentDomain.subDomains.push(childSubDomain);
-      });
+  function toSubDomain(node: DomainTreeNode<DomainFileRecord>, languageCode: string): SubDomain {
+    return {
+      code: node.record.displayCode,
+      label: getLabelForLanguage(node.record.element, languageCode),
+      subDomains: node.children.map(child => toSubDomain(child, languageCode)),
+    };
   }
 
   /**
@@ -1279,6 +1234,97 @@ function removeDuplicateOccurrences(entriesByLanguage: EntriesByLanguage): void 
       }
     }
   }
+}
+
+/**
+ * Format a mismatch rate as a percentage. Any mismatch fails the check, so a nonzero rate never
+ * rounds down to 0.00%.
+ */
+function formatMismatchRate(rate: number): string {
+  if (rate > 0 && rate < 0.0001) return '<0.01%';
+  return `${(rate * 100).toFixed(2)}%`;
+}
+
+/**
+ * Check that the domain text on every sense agrees with the English taxonomy label for its code,
+ * print a summary, and exit with an error if any sense domain disagrees. Sense domain text is English
+ * in every language, so all languages are checked against the English labels. This guards against
+ * source snapshots whose entries and taxonomy are numbered out of sync (PT-4547).
+ */
+function checkSenseDomainsOrExit(
+  entriesByLanguage: EntriesByLanguage,
+  taxonomiesByLanguage: TaxonomiesByLanguage,
+  domainsRequested: boolean
+): void {
+  const senses = Object.values(entriesByLanguage).flatMap(entries =>
+    Object.values(entries).flatMap(entry => entry.senses)
+  );
+  const labels = buildLabelIndex(taxonomiesByLanguage['en']);
+  const result = evaluateDomainCheck(uniqueSenseDomains(senses), labels, domainsRequested);
+  if (result.skipped) {
+    console.log('Skipping sense domain check: no domain directory was given.');
+    return;
+  }
+  const allStats = result.stats;
+
+  console.log('Sense domain check (each sense counted once; sense text is English):');
+  const columns = ['Taxonomy', 'Total', 'Matched', 'Mismatched', 'Missing code', 'Rate'];
+  const rows = allStats.map(stats => [
+    stats.taxonomy,
+    String(stats.total),
+    String(stats.matched),
+    String(stats.mismatched),
+    String(stats.missingCode),
+    formatMismatchRate(stats.mismatchRate),
+  ]);
+  const widths = columns.map((column, i) =>
+    Math.max(column.length, ...rows.map(row => row[i].length))
+  );
+  for (const row of [columns, ...rows])
+    console.log(
+      '  ' +
+        row
+          .map((cell, i) => (i === 0 ? cell.padEnd(widths[i]) : cell.padStart(widths[i])))
+          .join('  ')
+    );
+
+  for (const stats of allStats.filter(stats => stats.mismatchRate > 0)) {
+    console.log(
+      `\nMost frequent disagreements in ${stats.taxonomy} (code: sense text vs taxonomy label):`
+    );
+    for (const { code, value, label, count } of stats.examples)
+      console.log(
+        `  ${count} x ${code}: "${value}" vs ${label === undefined ? '(code not in taxonomy)' : `"${label}"`}`
+      );
+  }
+
+  if (result.notLoaded.length === 0 && result.mismatched.length === 0) return;
+
+  for (const taxonomy of result.notLoaded) {
+    const count = allStats.find(stats => stats.taxonomy === taxonomy)?.total ?? 0;
+    const loadedLanguages = Object.keys(taxonomiesByLanguage).filter(
+      language => taxonomiesByLanguage[language][taxonomy]
+    );
+    const cause =
+      loadedLanguages.length > 0
+        ? `it was loaded for ${loadedLanguages.join(', ')} but not English, and sense domain ` +
+          `text is English`
+        : 'check the domain files and earlier parse errors';
+    console.error(
+      `\nError: taxonomy "${taxonomy}" has no English labels (${cause}), so none of its ` +
+        `${count} sense domains could be checked.`
+    );
+  }
+  if (result.mismatched.length > 0)
+    console.error(
+      `\nError: sense domain codes in ${result.mismatched.join(', ')} disagree with the ` +
+        `taxonomy labels; the source data is probably numbered out of sync. Paratext shows the ` +
+        `label that belongs to the code, so any disagreement would show users the wrong domain.`
+    );
+  console.error('No output files were written.');
+  // GitHub Actions workflow commands, so the failure shows on the PR checks page
+  for (const annotation of domainCheckAnnotations(result)) console.error(annotation);
+  process.exit(1);
 }
 
 /**
@@ -1535,6 +1581,12 @@ function main(): void {
     process.exit(1);
   }
 
+  // An empty --domains value fails here too, rather than silently skipping domains
+  if (options.domains !== undefined && !fs.existsSync(options.domains)) {
+    console.error(`Error: Domains directory '${options.domains}' does not exist.`);
+    process.exit(1);
+  }
+
   console.log(`Starting lexicon conversion...`);
   console.log(`Dictionary type: ${dictionaryType}`);
   console.log(`Input directory: ${options.input}`);
@@ -1569,7 +1621,7 @@ function main(): void {
   );
 
   // Next, process domain files to build taxonomies if provided
-  if (options.domains && fs.existsSync(options.domains)) {
+  if (options.domains) {
     console.log(`\nStep 3: Processing domain files to build taxonomies...`);
     const processDomainsStart = Date.now();
     processDomainFiles(options.domains, taxonomiesByLanguage, dictionaryType);
@@ -1577,13 +1629,11 @@ function main(): void {
       `Domain processing completed in ${((Date.now() - processDomainsStart) / 1000).toFixed(2)} seconds.`
     );
   } else {
-    console.log(`\nSkipping domain processing: No domain directory provided or it does not exist.`);
+    console.log(`\nSkipping domain processing: No domain directory provided.`);
   }
 
   // Next, remove empty entries and senses
-  console.log(
-    `\nStep ${options.domains && fs.existsSync(options.domains) ? '4' : '3'}: Removing empty entries and senses...`
-  );
+  console.log(`\nStep ${options.domains ? '4' : '3'}: Removing empty entries and senses...`);
   const removeStart = Date.now();
   const removalStats = removeEmptyEntriesAndSenses(entriesByLanguage);
   console.log(
@@ -1616,10 +1666,12 @@ function main(): void {
   // Check for duplicate occurrences
   removeDuplicateOccurrences(entriesByLanguage);
 
+  // Fail before writing anything if sense domains disagree with the taxonomy labels
+  console.log(`\nChecking sense domains against the English taxonomy labels...`);
+  checkSenseDomainsOrExit(entriesByLanguage, taxonomiesByLanguage, options.domains !== undefined);
+
   // Finally, write output files
-  console.log(
-    `\nStep ${options.domains && fs.existsSync(options.domains) ? '5' : '4'}: Writing output files...`
-  );
+  console.log(`\nStep ${options.domains ? '5' : '4'}: Writing output files...`);
   const writeStart = Date.now();
 
   // Create output directory if it doesn't exist

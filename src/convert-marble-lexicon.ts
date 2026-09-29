@@ -1633,9 +1633,7 @@ function main(): void {
   }
 
   // Next, remove empty entries and senses
-  console.log(
-    `\nStep ${options.domains ? '4' : '3'}: Removing empty entries and senses...`
-  );
+  console.log(`\nStep ${options.domains ? '4' : '3'}: Removing empty entries and senses...`);
   const removeStart = Date.now();
   const removalStats = removeEmptyEntriesAndSenses(entriesByLanguage);
   console.log(
@@ -1673,9 +1671,7 @@ function main(): void {
   checkSenseDomainsOrExit(entriesByLanguage, taxonomiesByLanguage, options.domains !== undefined);
 
   // Finally, write output files
-  console.log(
-    `\nStep ${options.domains ? '5' : '4'}: Writing output files...`
-  );
+  console.log(`\nStep ${options.domains ? '5' : '4'}: Writing output files...`);
   const writeStart = Date.now();
 
   // Create output directory if it doesn't exist

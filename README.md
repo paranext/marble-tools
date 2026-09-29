@@ -14,6 +14,8 @@ This repo assumes that you have access to MARBLE data from the ubsicap organizat
 
 Not all of these repositories may be used in scripts at this time. Those are just the known, expected sources of data for scripts and tools in this repository.
 
+Node is pinned to 22.22.1 with [Volta](https://volta.sh/). Without Volta, use a Node version that satisfies `engines` in `package.json`.
+
 ## Getting Started
 
 1. **Clone the repository**:
@@ -28,6 +30,8 @@ Not all of these repositories may be used in scripts at this time. Those are jus
    ```
    npm install
    ```
+
+   The prebuilt `sqlite3` binary for Linux needs glibc 2.38 or newer (Ubuntu 24.04+). On older distros, such as Ubuntu 22.04, the install detects this and builds `sqlite3` from source automatically, which needs Python, make and a C++ compiler.
 
 3. **Run scripts as needed**:
    ```

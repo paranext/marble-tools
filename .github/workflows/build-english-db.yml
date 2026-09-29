@@ -13,19 +13,21 @@ jobs:
       - name: Checkout marble-tools
         uses: actions/checkout@v4
 
-      - name: Clone private repositories
-        run: |
-          git clone https://${{ secrets.MARBLE_REPO_TOKEN }}@github.com/ubsicap/marble-lexicon.git ../marble-lexicon
-          git clone https://${{ secrets.MARBLE_REPO_TOKEN }}@github.com/ubsicap/marble-indexes.git ../marble-indexes
-
-      - name: Setup Node.js
+      - name: Install Node and NPM
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: 'package.json'
           cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
+
+      # Runs after npm ci so dependency install scripts can't read the token that git clone
+      # stores in the cloned repos' .git/config
+      - name: Clone private repositories
+        run: |
+          git clone https://${{ secrets.MARBLE_REPO_TOKEN }}@github.com/ubsicap/marble-lexicon.git ../marble-lexicon
+          git clone https://${{ secrets.MARBLE_REPO_TOKEN }}@github.com/ubsicap/marble-indexes.git ../marble-indexes
 
       - name: Convert SDBG lexicon
         run: npm run convert-sdbg

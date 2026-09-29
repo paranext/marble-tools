@@ -14,6 +14,8 @@ This repo assumes that you have access to MARBLE data from the ubsicap organizat
 
 Not all of these repositories may be used in scripts at this time. Those are just the known, expected sources of data for scripts and tools in this repository.
 
+Node is pinned to 22.22.1 with [Volta](https://volta.sh/). Without Volta, use a Node version that satisfies `engines` in `package.json`.
+
 ## Getting Started
 
 1. **Clone the repository**:

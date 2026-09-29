@@ -1,6 +1,10 @@
 import fs from 'fs';
 import path from 'path';
 import { DOMParser } from '@xmldom/xmldom';
+// TODO: Replace sqlite3 and sqlite with the built-in node:sqlite module, then remove sqlite3,
+// sqlite, @types/sqlite3 and scripts/ensure-sqlite3.js. The native sqlite3 addon is what brings in
+// the glibc rebuild and the prebuild-install/node-gyp dependency chain. On Node 22, node:sqlite
+// works without a flag but logs an ExperimentalWarning.
 import sqlite3 from 'sqlite3';
 import { open, Database } from 'sqlite';
 import { Command } from 'commander';

@@ -13,28 +13,21 @@ jobs:
       - name: Checkout marble-tools
         uses: actions/checkout@v4
 
-      - name: Clone private repositories
-        run: |
-          git clone https://${{ secrets.MARBLE_REPO_TOKEN }}@github.com/ubsicap/marble-lexicon.git ../marble-lexicon
-          git clone https://${{ secrets.MARBLE_REPO_TOKEN }}@github.com/ubsicap/marble-indexes.git ../marble-indexes
-
-      - name: Read package.json
-        id: package_json
-        uses: zoexx/github-action-json-file-properties@1.0.6
-        with:
-          file_path: 'package.json'
-
-      - name: Install Volta and toolchain
-        uses: volta-cli/action@v4
-
       - name: Install Node and NPM
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ fromJson(steps.package_json.outputs.volta).node }}
+          node-version-file: 'package.json'
           cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
+
+      # Runs after npm ci so dependency install scripts can't read the token that git clone
+      # stores in the cloned repos' .git/config
+      - name: Clone private repositories
+        run: |
+          git clone https://${{ secrets.MARBLE_REPO_TOKEN }}@github.com/ubsicap/marble-lexicon.git ../marble-lexicon
+          git clone https://${{ secrets.MARBLE_REPO_TOKEN }}@github.com/ubsicap/marble-indexes.git ../marble-indexes
 
       - name: Convert SDBG lexicon
         run: npm run convert-sdbg

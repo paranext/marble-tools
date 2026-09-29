@@ -1,0 +1,69 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm test)",
+      "Bash(npm run lint)",
+      "Bash(npm run convert-sdbg)",
+      "Bash(npm run convert-sdbh)",
+      "Bash(npm run import-*)",
+      "Bash(npx jest)",
+      "Bash(npx jest *)",
+      "Bash(npx tsc --noEmit*)",
+      "Bash(npx eslint *)",
+      "Bash(npx prettier --check *)",
+      "Bash(npx ts-node src/*)",
+      "Bash(scripts/diff-output.sh *)",
+      "Bash(git -C ../marble-lexicon log *)",
+      "Bash(git -C ../marble-lexicon show *)",
+      "Bash(git -C ../marble-lexicon status*)",
+      "Bash(git -C ../marble-lexicon fetch*)",
+      "Bash(git -C ../marble-lexicon archive *)",
+      "Bash(git -C ../marble-lexicon rev-parse *)",
+      "Bash(git -C ../marble-indexes log *)",
+      "Bash(git -C ../marble-indexes show *)",
+      "Bash(git -C ../marble-indexes status*)",
+      "Bash(git -C ../marble-indexes fetch*)",
+      "Bash(git -C ../marble-indexes archive *)",
+      "Bash(git -C ../marble-indexes rev-parse *)"
+    ],
+    "deny": [
+      "Bash(git -C ../marble-lexicon checkout*)",
+      "Bash(git -C ../marble-lexicon switch*)",
+      "Bash(git -C ../marble-lexicon reset*)",
+      "Bash(git -C ../marble-lexicon pull*)",
+      "Bash(git -C ../marble-lexicon clean*)",
+      "Bash(git -C ../marble-lexicon commit*)",
+      "Bash(git -C ../marble-lexicon push*)",
+      "Bash(git -C ../marble-lexicon stash*)",
+      "Bash(git -C ../marble-lexicon merge*)",
+      "Bash(git -C ../marble-lexicon rebase*)",
+      "Bash(git -C ../marble-lexicon restore*)",
+      "Bash(git -C ../marble-indexes checkout*)",
+      "Bash(git -C ../marble-indexes switch*)",
+      "Bash(git -C ../marble-indexes reset*)",
+      "Bash(git -C ../marble-indexes pull*)",
+      "Bash(git -C ../marble-indexes clean*)",
+      "Bash(git -C ../marble-indexes commit*)",
+      "Bash(git -C ../marble-indexes push*)",
+      "Bash(git -C ../marble-indexes stash*)",
+      "Bash(git -C ../marble-indexes merge*)",
+      "Bash(git -C ../marble-indexes rebase*)",
+      "Bash(git -C ../marble-indexes restore*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_response.filePath // .tool_input.file_path' | { read -r f; case \"$f\" in \"$CLAUDE_PROJECT_DIR\"/src/*.ts|\"$CLAUDE_PROJECT_DIR\"/sql/*.sql) cd \"$CLAUDE_PROJECT_DIR\" && npx prettier --write --log-level warn \"$f\" ;; esac; } 2>/dev/null || true",
+            "timeout": 30,
+            "statusMessage": "Formatting with prettier"
+          }
+        ]
+      }
+    ]
+  }
+}

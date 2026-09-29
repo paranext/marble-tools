@@ -1,4 +1,4 @@
-> This is a copy of Reinier de Blois's "Semantic Dictionaries - Structure" document. It is kept as written; see [Notes on semantic domains](#notes-on-semantic-domains) at the end for clarifications from Reinier and for how the current data differs.
+> This is a copy of Reinier de Blois's "Semantic Dictionaries - Structure" document. It is kept as written; see [Notes on semantic domains](#notes-on-semantic-domains) and [Notes on entries](#notes-on-entries) at the end for clarifications from Reinier and for how the current data differs.
 
 ### **SEMANTIC DICTIONARIES \- STRUCTURE**
 
@@ -244,3 +244,28 @@ In the current data:
 From Reinier: Parts was a semantic domain of its own. **Parts: Trees** covered terms such as bark, branch and leaf, as opposed to **Trees**, which covers kinds of trees.
 
 Reinier has since removed the **Parts:** prefix entirely. The current data has no `001002:` codes and no **Parts: X** domain text: former **Parts: X** domains are now plain **X** with X's own code, and body parts have their own domain, **Body Parts** (`001001005`). The rendering note above about `001002:` codes no longer applies.
+
+### Codes and hierarchy
+
+DOMAINS1 files hold the lexical domains and DOMAINS2 files hold the contextual domains. SDBG has only DOMAINS1. Codes are sequences of 3-digit segments. SDBH-DOMAINS1 codes are 3 to 15 digits long and SDBG-DOMAINS1 codes are 3 or 6 digits. SDBH-DOMAINS2 codes are all 3 digits, so it has no hierarchy.
+
+The hierarchy follows from the codes: a domain's parent is its code minus the last 3 digits. In every snapshot checked, each parent was present in the same file, and **Level** always matched the segment count. **HasSubDomains** is wrong on several parents (e.g. 001001 Beings, 001002008 Vegetation, 003001017 Titles), so the converter builds the hierarchy from the codes and only warns when the flag disagrees.
+
+Codes are positional, not stable identifiers. SDBH-DOMAINS2 lists its domains in roughly alphabetical order of their English labels. Inserting or renaming a domain therefore renumbers every domain after it. The lexicon entries are renumbered separately, sometimes later. Between the two, entries after the insertion point carry the code of a neighboring domain, while entries before it are still correct. This produced PT-4547. The database stores only the code for each sense, so a shifted code shows the wrong domain label to users.
+
+### Domain text on senses
+
+The text of a LEXDomain, LEXCoreDomain or CONDomain element is the English label that the author saw when tagging, whatever the language of the lexicon file. The converter uses this to check the codes. For each taxonomy, it compares every sense's domain text with the English label for its code, and fails the conversion if any disagree or have no code. At commit 26d7112, none disagree. At commit 018b05a, fewer than 0.25% disagreed in each taxonomy: small shifts where entries had not yet been renumbered after recent taxonomy edits. A snapshot with entries and taxonomy out of sync disagrees by tens of percent.
+
+LEXCoreDomain uses the contextual taxonomy, like CONDomain.
+
+### Localizations
+
+Only some languages have domain labels: 7 in SDBH-DOMAINS1, 6 in SDBH-DOMAINS2 and 10 in SDBG-DOMAINS1. Output files for other languages have no taxonomy. SDBG-DOMAINS1 labels Indonesian with LanguageCode `in`, while the SDBG lexicon files use `id`, so the SDBG Indonesian output gets no taxonomy.
+
+## Notes on entries
+
+Not part of Reinier's document.
+
+- From Reinier: SDBH entries with a **Version** below 3 are not ready and are excluded. Versions 3 and 4 have only the lexical analysis done, so their contextual meanings are ignored. Version 5 has both analyses. SDBG is complete, so its Version is ignored. As a result, some common SDBH words, such as עַל and כִּי, have no entry yet.
+- **Lemma** text is not in Unicode normalization form C (NFC). Greek acute accents are the oxia characters (U+1F7x), and Hebrew marks are in a non-canonical order (e.g. dagesh or shin dot before the vowel). Normalize both sides before comparing with text typed or copied from elsewhere.

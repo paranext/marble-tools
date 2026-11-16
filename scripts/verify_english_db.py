@@ -34,6 +34,7 @@ import argparse
 import collections
 import glob
 import os
+import re
 import sqlite3
 import sys
 import xml.etree.ElementTree as ET
@@ -46,6 +47,19 @@ MIN_SDBH_ENTRY_VERSION = 3
 LANGUAGE = 'en'
 # How many offending items each failed check lists
 SAMPLE_SIZE = 8
+
+
+def lexicon_files(lexicon_root, name):
+    """The dictionary's lexicon files, selected as the converter does (a four-character name, a
+    dash and two digits, case-insensitive), limited to the dictionary's own prefix."""
+    directory = os.path.join(lexicon_root, name)
+    if not os.path.isdir(directory):
+        return []
+    return [
+        os.path.join(directory, filename)
+        for filename in sorted(os.listdir(directory))
+        if re.fullmatch(r'\w{4}-\d{2}\.xml', filename, re.I) and filename.upper().startswith(f'{name}-')
+    ]
 
 
 def text_of(element):
@@ -82,7 +96,7 @@ def expected_from_lexicon(lexicon_root, name):
     stats = collections.Counter()
     # Entries that lose all their senses are not in the database
     entry_ids = set()
-    for path in sorted(glob.glob(os.path.join(lexicon_root, name, f'{name}-[0-9]*.XML'))):
+    for path in lexicon_files(lexicon_root, name):
         for entry in ET.parse(path).getroot().iter('Lexicon_Entry'):
             entry_id = (entry.get('Id') or '')[:6]
             if name == 'SDBH':
@@ -190,6 +204,11 @@ def check_senses_and_occurrences(db_path, lexicon_root):
         entries_missing = expected_entries - actual_entries
         entries_extra = actual_entries - expected_entries
         problems = []
+        if not expected:
+            problems.append(
+                f'the lexicon rules yield no senses for {name}; is --lexicon {lexicon_root} the '
+                f'marble-lexicon checkout?'
+            )
         if missing:
             problems.append(f'{len(missing)} expected senses missing from the database: {sample(missing)}')
         if extra:
@@ -241,13 +260,21 @@ def check_previous(db_path, previous_path):
         old = totals_of(previous_path, name)
         for metric, old_value in old.items():
             new_value = new[metric]
+            # A previous total of 0 (or a dictionary missing from the previous database) gives
+            # nothing to compare with, which must not pass as "no drop"
+            empty = old_value == 0
             change = (new_value - old_value) / old_value if old_value else 0.0
-            drop = old_value > 0 and new_value < old_value * (1 - MAX_DROP_FRACTION)
+            drop = not empty and new_value < old_value * (1 - MAX_DROP_FRACTION)
             print(
                 f'[check 3 totals] {name} {metric}: previous {old_value}, new {new_value} '
-                f'({change:+.1%}): {"FAIL" if drop else "ok"}'
+                f'({change:+.1%}): {"FAIL" if drop or empty else "ok"}'
             )
-            if drop:
+            if empty:
+                failures.append(
+                    f'check 3 {name}: the previous database has no {metric}, so there is nothing '
+                    f'to compare with'
+                )
+            elif drop:
                 failures.append(
                     f'check 3 {name}: {metric} dropped from {old_value} to {new_value} '
                     f'(more than {MAX_DROP_FRACTION:.0%})'
@@ -275,7 +302,7 @@ def check_links(db_path, links_dir, lexicon_root):
                 )
     for name in DICTIONARIES:
         positions = {}
-        for path in sorted(glob.glob(os.path.join(lexicon_root, name, f'{name}-[0-9]*.XML'))):
+        for path in lexicon_files(lexicon_root, name):
             for entry in ET.parse(path).getroot().iter('Lexicon_Entry'):
                 entry_id = (entry.get('Id') or '')[:6]
                 for b, base_form in enumerate(entry.findall('BaseForms/BaseForm')):

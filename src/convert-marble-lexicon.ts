@@ -28,6 +28,7 @@ import {
   ENTRY_VERSION,
   extractDefinitionAndGlosses,
   findConReferencesMissingFromLex,
+  referenceKeys,
   occurrencesFromLexReferences,
   parseEntryVersion,
   parseXmlStrict,
@@ -36,6 +37,7 @@ import {
 } from './helpers';
 import {
   cleanUpDefinitions,
+  CrossReferenceCounts,
   DefinitionCleanupInput,
   DefinitionCleanupReport,
   LOOKUP_STEPS,
@@ -471,9 +473,10 @@ function processFile(
     lexReferences: string[],
     entryId: string
   ): void {
+    const lexReferenceKeys = referenceKeys(lexReferences);
     for (const conMeaning of findElements(lexMeaning, 'ContextualMeaning')) {
       const conReferences = findElements(conMeaning, 'CONReference').map(getTextContent);
-      for (const missing of findConReferencesMissingFromLex(conReferences, lexReferences)) {
+      for (const missing of findConReferencesMissingFromLex(conReferences, lexReferenceKeys)) {
         stats.conReferencesMissingFromLex++;
         console.warn(
           `CONReference ${missing} of entry ${entryId}, lexical meaning ${lexMeaning.getAttribute('Id')}, contextual meaning ${conMeaning.getAttribute('Id')} is not in the lexical meaning's LEXReferences (file ${path.basename(filePath)})`
@@ -634,7 +637,16 @@ function processFile(
           // Initialize entry in the language dictionary if it doesn't exist
           if (!entriesByLanguage[languageCode]) entriesByLanguage[languageCode] = {};
 
-          if (!entriesByLanguage[languageCode][lemma]) {
+          const existingEntry = entriesByLanguage[languageCode][lemma];
+          if (existingEntry && existingEntry.id !== `${ENTRY_PREFIX}${entryId}`) {
+            throw new Error(
+              `Entries ${existingEntry.id.replace(ENTRY_PREFIX, '')} and ${entryId} have the same ` +
+                `lemma "${lemma}" (language ${languageCode}, file ${fileName}); their senses ` +
+                `would be merged into one entry`
+            );
+          }
+
+          if (!existingEntry) {
             entriesByLanguage[languageCode][lemma] = {
               lemma,
               id: `${ENTRY_PREFIX}${entryId}`,
@@ -933,22 +945,31 @@ function checkSenseDomainsOrExit(
 
 /**
  * Print what the definition clean-up did per language, then the cross-reference targets it left
- * unchanged: those whose entry the conversion rules leave out, and those it could not resolve. The
- * Dictionary shows such a cross-reference as plain text, so these are warnings, not failures.
+ * unchanged: those whose entry the conversion rules leave out, those it could not resolve, and
+ * `{L:` markers that are not cross-references at all. The Dictionary shows each of these as plain
+ * text, so they are warnings, not failures.
  */
 function printDefinitionCleanupReport(report: DefinitionCleanupReport): void {
   for (const [language, counts] of Object.entries(report.byLanguage)) {
-    const { crossReferences: refs, symbols, meaningLetters: letters } = counts;
+    const {
+      crossReferences: refs,
+      glossCrossReferences: glossRefs,
+      malformedCrossReferences,
+      symbols,
+      meaningLetters: letters,
+    } = counts;
+    const left = (r: CrossReferenceCounts): string =>
+      `other dictionary ${r.otherDictionary}, unknown dictionary ${r.unknownDictionary}, ` +
+      `excluded by design ${r.excludedByDesign}, ambiguous ${r.ambiguous}, ` +
+      `not output in this language ${r.notEmitted}, not found ${r.unresolved}`;
+    const resolved = (r: CrossReferenceCounts): string =>
+      LOOKUP_STEPS.map(step => `${step} ${r[step]}`).join(', ');
     console.log(`  ${language}:`);
-    console.log(
-      `    cross-reference targets resolved: ` +
-        LOOKUP_STEPS.map(step => `${step} ${refs[step]}`).join(', ')
-    );
-    console.log(
-      `    cross-reference targets left unchanged: other dictionary ${refs.otherDictionary}, ` +
-        `excluded by design ${refs.excludedByDesign}, ambiguous ${refs.ambiguous}, ` +
-        `not output in this language ${refs.notEmitted}, not found ${refs.unresolved}`
-    );
+    console.log(`    definition cross-reference targets resolved: ${resolved(refs)}`);
+    console.log(`    definition cross-reference targets left unchanged: ${left(refs)}`);
+    console.log(`    gloss cross-reference targets resolved: ${resolved(glossRefs)}`);
+    console.log(`    gloss cross-reference targets left unchanged: ${left(glossRefs)}`);
+    console.log(`    malformed {L: markers in definitions: ${malformedCrossReferences}`);
     console.log(
       `    structure symbols removed: ` +
         STRUCTURE_SYMBOLS.map(symbol => `"${symbol}" ${symbols[symbol]}`).join(', ')
@@ -966,11 +987,24 @@ function printDefinitionCleanupReport(report: DefinitionCleanupReport): void {
   for (const [title, problems] of lists) {
     if (problems.length === 0) continue;
     const total = problems.reduce((sum, problem) => sum + problem.count, 0);
-    console.warn(`${title} (${total} in ${problems.length} places; target, language, entry Id):`);
+    console.warn(
+      `${title} (${total} in ${problems.length} places; target, language, field, entry Id):`
+    );
     for (const problem of problems)
       console.warn(
-        `  ${problem.dictionaryId}:${problem.target}  ${problem.language}  ` +
+        `  ${problem.dictionaryId}:${problem.target}  ${problem.language}  ${problem.field}  ` +
           `${problem.entryId.replace(ENTRY_PREFIX, '')}  x${problem.count}  (${problem.reason})`
+      );
+  }
+
+  if (report.malformed.length > 0) {
+    const total = report.malformed.reduce((sum, marker) => sum + marker.count, 0);
+    console.warn(
+      `Malformed {L: markers in definitions, left unchanged (${total} in ${report.malformed.length} places; language, entry Id, text):`
+    );
+    for (const marker of report.malformed)
+      console.warn(
+        `  ${marker.language}  ${marker.entryId.replace(ENTRY_PREFIX, '')}  x${marker.count}  ${JSON.stringify(marker.excerpt)}`
       );
   }
 }

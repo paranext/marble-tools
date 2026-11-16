@@ -8,7 +8,10 @@
  *   entry it means, because the Dictionary panel looks the target up by exact lemma.
  * - `[a]`, `[b]`, … (a meaning, by position) become `(1)`, `(2)`, … as in Paratext 9.
  *
- * Glosses are not changed: in glosses `=` usually means "that is".
+ * Glosses are rendered by the Dictionary panel with the same markup parser, so their cross-reference
+ * targets are rewritten in the same way. Their symbols and `[a]` letters are left alone: in glosses
+ * `=` usually means "that is". Paratext 9 strips the structure symbols from glosses as well; this
+ * converter deliberately does not.
  */
 
 /**
@@ -18,6 +21,13 @@
  * files escape them.
  */
 const CROSS_REFERENCE_REGEX = /\{L:([^<}]*)<([A-Za-z-]+):([^>}]*)>\}/g;
+
+/**
+ * The dictionaries other than the one being converted whose targets occur in MARBLE's text. A target
+ * with any other prefix is reported as an unknown dictionary, so a misspelt prefix is not mistaken
+ * for a link into another dictionary.
+ */
+export const KNOWN_DICTIONARY_IDS = ['SDBH', 'SDBG', 'BT-OT', 'REALIA'] as const;
 
 /** A trailing meaning position such as `:000000` (SDBG), which is not part of the lemma */
 const TARGET_POSITION_REGEX = /:\d+$/;
@@ -100,6 +110,8 @@ export function createLemmaLookup<T extends LemmaIndexEntry>(entries: T[]): Lemm
       comparisons: [{ index: buildIndex(entries, lemma, identity), key: identity }],
     },
     { step: 'nfd', comparisons: [{ index: buildIndex(entries, lemma, toNfd), key: toNfd }] },
+    // Kept although it may match nothing in the current data: the source has spelled lemmas both with
+    // a space and with a no-break space, and can again
     {
       step: 'noBreakSpace',
       comparisons: [
@@ -113,6 +125,8 @@ export function createLemmaLookup<T extends LemmaIndexEntry>(entries: T[]): Lemm
         key,
       })),
     },
+    // Kept although it may match nothing in the current data: the source has spelled hataf vowels both
+    // as one character and as sheva + vowel, and can again
     {
       step: 'hataf',
       comparisons: [{ index: buildIndex(entries, both, toHatafKey), key: toHatafKey }],
@@ -132,27 +146,54 @@ export function createLemmaLookup<T extends LemmaIndexEntry>(entries: T[]): Lemm
   };
 }
 
+/** What a cross-reference target is rewritten to: its dictionary (as spelled in the output) and lemma */
+export interface RewrittenTarget {
+  dictionaryId: string;
+  lemma: string;
+}
+
 /**
  * Calls `rewrite` with the dictionary and lemma of each cross-reference target in `text` and puts
- * the lemma it returns in place of the old one, keeping everything else (link text, dictionary,
+ * the dictionary and lemma it returns in place of the old ones, keeping everything else (link text,
  * trailing meaning position) as it was. A target for which `rewrite` returns `undefined` is left
  * unchanged.
  */
 export function rewriteCrossReferenceTargets(
   text: string,
-  rewrite: (dictionaryId: string, lemma: string) => string | undefined
+  rewrite: (dictionaryId: string, lemma: string) => RewrittenTarget | undefined
 ): string {
   return text.replace(
     CROSS_REFERENCE_REGEX,
     (match, linkText: string, dictionaryId: string, target: string) => {
       const position = TARGET_POSITION_REGEX.exec(target)?.[0] ?? '';
       const lemma = target.slice(0, target.length - position.length);
-      const newLemma = rewrite(dictionaryId, lemma);
-      return newLemma === undefined
+      const rewritten = rewrite(dictionaryId, lemma);
+      return rewritten === undefined
         ? match
-        : `{L:${linkText}<${dictionaryId}:${newLemma}${position}>}`;
+        : `{L:${linkText}<${rewritten.dictionaryId}:${rewritten.lemma}${position}>}`;
     }
   );
+}
+
+/** How much of a malformed marker is quoted in the report */
+const MALFORMED_EXCERPT_LENGTH = 60;
+
+/**
+ * Finds each `{L:` marker that the cross-reference pattern does not match (no `<`, no closing `}`,
+ * or a dictionary prefix that is not letters), so the Dictionary panel shows it as plain text.
+ * Returns a short excerpt starting at each such marker. A marker inside a matched cross-reference's
+ * link text is not counted.
+ */
+export function findMalformedCrossReferences(text: string): string[] {
+  const covered: [number, number][] = Array.from(text.matchAll(CROSS_REFERENCE_REGEX), match => [
+    match.index,
+    match.index + match[0].length,
+  ]);
+  const malformed: string[] = [];
+  for (let index = text.indexOf('{L:'); index !== -1; index = text.indexOf('{L:', index + 1))
+    if (!covered.some(([start, end]) => index >= start && index < end))
+      malformed.push(text.slice(index, index + MALFORMED_EXCERPT_LENGTH));
+  return malformed;
 }
 
 /**
@@ -228,7 +269,10 @@ export interface DefinitionCleanupInput {
   /** The entries that will be output, by language and lemma; their definitions are updated */
   entriesByLanguage: {
     [language: string]: {
-      [lemma: string]: { id: string; senses: { id: string; definition: string }[] };
+      [lemma: string]: {
+        id: string;
+        senses: { id: string; definition: string; glosses?: string[] }[];
+      };
     };
   };
   /** Every entry of the source dictionary, including those that are not output */
@@ -243,6 +287,8 @@ export interface DefinitionCleanupInput {
 /** A cross-reference target that is left unchanged, counted per language and containing entry */
 export interface CrossReferenceProblem {
   language: string;
+  /** Where the cross-reference is */
+  field: 'definition' | 'gloss';
   /** The entry whose definition holds the cross-reference */
   entryId: string;
   dictionaryId: string;
@@ -251,18 +297,36 @@ export interface CrossReferenceProblem {
   reason: string;
 }
 
+/** A `{L:` marker that is not a cross-reference at all, counted per language and entry */
+export interface MalformedCrossReference {
+  language: string;
+  entryId: string;
+  /** The text from the marker on */
+  excerpt: string;
+  count: number;
+}
+
+export type CrossReferenceCounts = Record<LookupStep, number> & {
+  /** Targets in another known dictionary, which are left unchanged */
+  otherDictionary: number;
+  /** Targets whose dictionary is not a known one, which are left unchanged */
+  unknownDictionary: number;
+  ambiguous: number;
+  /** Targets whose entry exists but is not output in this language */
+  notEmitted: number;
+  /** Targets whose entry the conversion rules leave out */
+  excludedByDesign: number;
+  /** Targets that match no entry */
+  unresolved: number;
+};
+
 export interface LanguageCleanupCounts {
-  crossReferences: Record<LookupStep, number> & {
-    /** Targets in another dictionary, which are left unchanged */
-    otherDictionary: number;
-    ambiguous: number;
-    /** Targets whose entry exists but is not output in this language */
-    notEmitted: number;
-    /** Targets whose entry the conversion rules leave out */
-    excludedByDesign: number;
-    /** Targets that match no entry */
-    unresolved: number;
-  };
+  /** Cross-reference targets in definitions */
+  crossReferences: CrossReferenceCounts;
+  /** Cross-reference targets in glosses */
+  glossCrossReferences: CrossReferenceCounts;
+  /** `{L:` markers in definitions that are not cross-references */
+  malformedCrossReferences: number;
   symbols: Record<StructureSymbol, number>;
   meaningLetters: MeaningLetterCounts;
 }
@@ -273,30 +337,42 @@ export interface DefinitionCleanupReport {
   unresolved: CrossReferenceProblem[];
   /** Targets whose entry exists but the conversion rules leave out */
   excludedByDesign: CrossReferenceProblem[];
+  /** `{L:` markers in definitions that are not cross-references; the text is left unchanged */
+  malformed: MalformedCrossReference[];
+}
+
+function emptyCrossReferenceCounts(): CrossReferenceCounts {
+  return {
+    exact: 0,
+    nfd: 0,
+    noBreakSpace: 0,
+    alternateLemma: 0,
+    hataf: 0,
+    otherDictionary: 0,
+    unknownDictionary: 0,
+    ambiguous: 0,
+    notEmitted: 0,
+    excludedByDesign: 0,
+    unresolved: 0,
+  };
 }
 
 function emptyCounts(): LanguageCleanupCounts {
   return {
-    crossReferences: {
-      exact: 0,
-      nfd: 0,
-      noBreakSpace: 0,
-      alternateLemma: 0,
-      hataf: 0,
-      otherDictionary: 0,
-      ambiguous: 0,
-      notEmitted: 0,
-      excludedByDesign: 0,
-      unresolved: 0,
-    },
+    crossReferences: emptyCrossReferenceCounts(),
+    glossCrossReferences: emptyCrossReferenceCounts(),
+    malformedCrossReferences: 0,
     symbols: { '= ': 0, '► ': 0, '◄ ': 0, '≈ ': 0 },
     meaningLetters: { replaced: 0, singleMeaning: 0, outOfRange: 0 },
   };
 }
 
 /**
- * Cleans up the definition of every output sense, in place: strips the structure symbols, rewrites
- * cross-reference targets to the exact lemma of an output entry, and numbers meaning letters. Run
+ * Cleans up every output sense, in place: strips the structure symbols from definitions, rewrites
+ * cross-reference targets in definitions and glosses to the exact lemma of an output entry, and
+ * numbers meaning letters in definitions. A target whose dictionary is the one being converted
+ * (compared without regard to case, as MARBLE has `sdbh` and `sdbg`) is written with the canonical
+ * dictionary ID. Run
  * it once the entries that will be output are final, since a target is rewritten only if its entry
  * is output. Targets are matched against every source entry, so a target that means an entry that
  * is not output is reported rather than matched to a different entry.
@@ -307,14 +383,19 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
   const byLanguage: Record<string, LanguageCleanupCounts> = {};
   const unresolved = new Map<string, CrossReferenceProblem>();
   const excludedByDesign = new Map<string, CrossReferenceProblem>();
+  const malformed = new Map<string, MalformedCrossReference>();
 
   const addProblem = (
     list: Map<string, CrossReferenceProblem>,
     problem: Omit<CrossReferenceProblem, 'count'>
   ) => {
-    const key = [problem.language, problem.entryId, problem.dictionaryId, problem.target].join(
-      '\t'
-    );
+    const key = [
+      problem.language,
+      problem.entryId,
+      problem.field,
+      problem.dictionaryId,
+      problem.target,
+    ].join('\t');
     const existing = list.get(key);
     if (existing) existing.count++;
     else list.set(key, { ...problem, count: 1 });
@@ -328,55 +409,79 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
     for (const lemma in entries) {
       const entry = entries[lemma];
 
-      // The exact lemma of the output entry a target means, or undefined to leave it unchanged
-      const resolve = (targetDictionary: string, target: string): string | undefined => {
-        const problem = { language, entryId: entry.id, dictionaryId: targetDictionary, target };
-        if (targetDictionary !== dictionaryId) {
-          counts.crossReferences.otherDictionary++;
+      // Rewrites a target to the exact lemma of the output entry it means; undefined leaves it
+      const makeResolver =
+        (field: CrossReferenceProblem['field'], refs: CrossReferenceCounts) =>
+        (targetDictionary: string, target: string): RewrittenTarget | undefined => {
+          const problem = {
+            language,
+            field,
+            entryId: entry.id,
+            dictionaryId: targetDictionary,
+            target,
+          };
+          const isCurrentDictionary = targetDictionary.toUpperCase() === dictionaryId.toUpperCase();
+          if (!isCurrentDictionary) {
+            if ((KNOWN_DICTIONARY_IDS as readonly string[]).includes(targetDictionary)) {
+              refs.otherDictionary++;
+            } else {
+              refs.unknownDictionary++;
+              addProblem(unresolved, { ...problem, reason: 'unknown dictionary' });
+            }
+            return undefined;
+          }
+          const result = lookup(target);
+          if (result.kind === 'notFound') {
+            refs.unresolved++;
+            addProblem(unresolved, { ...problem, reason: 'not found' });
+            return undefined;
+          }
+          if (result.kind === 'ambiguous') {
+            refs.ambiguous++;
+            const ids = result.entries.map(candidate => candidate.id).join(', ');
+            addProblem(unresolved, {
+              ...problem,
+              reason: `ambiguous (${result.step}): entries ${ids}`,
+            });
+            return undefined;
+          }
+          const found = result.entry;
+          if (entries[found.lemma]) {
+            refs[result.step]++;
+            return { dictionaryId, lemma: found.lemma };
+          }
+          if (found.excludedByDesign) {
+            refs.excludedByDesign++;
+            addProblem(excludedByDesign, {
+              ...problem,
+              reason: `entry ${found.id}: ${found.excludedByDesign}`,
+            });
+          } else {
+            refs.notEmitted++;
+            addProblem(unresolved, {
+              ...problem,
+              reason: `entry ${found.id} is not output in this language`,
+            });
+          }
           return undefined;
-        }
-        const result = lookup(target);
-        if (result.kind === 'notFound') {
-          counts.crossReferences.unresolved++;
-          addProblem(unresolved, { ...problem, reason: 'not found' });
-          return undefined;
-        }
-        if (result.kind === 'ambiguous') {
-          counts.crossReferences.ambiguous++;
-          const ids = result.entries.map(candidate => candidate.id).join(', ');
-          addProblem(unresolved, {
-            ...problem,
-            reason: `ambiguous (${result.step}): entries ${ids}`,
-          });
-          return undefined;
-        }
-        const found = result.entry;
-        if (entries[found.lemma]) {
-          counts.crossReferences[result.step]++;
-          return found.lemma;
-        }
-        if (found.excludedByDesign) {
-          counts.crossReferences.excludedByDesign++;
-          addProblem(excludedByDesign, {
-            ...problem,
-            reason: `entry ${found.id}: ${found.excludedByDesign}`,
-          });
-        } else {
-          counts.crossReferences.notEmitted++;
-          addProblem(unresolved, {
-            ...problem,
-            reason: `entry ${found.id} is not output in this language`,
-          });
-        }
-        return undefined;
-      };
+        };
+      const resolveInDefinition = makeResolver('definition', counts.crossReferences);
+      const resolveInGloss = makeResolver('gloss', counts.glossCrossReferences);
 
       for (const sense of entry.senses) {
+        for (const excerpt of findMalformedCrossReferences(sense.definition)) {
+          counts.malformedCrossReferences++;
+          const key = [language, entry.id, excerpt].join('\t');
+          const existing = malformed.get(key);
+          if (existing) existing.count++;
+          else malformed.set(key, { language, entryId: entry.id, excerpt, count: 1 });
+        }
+
         const stripped = stripStructureSymbols(sense.definition);
         for (const symbol of STRUCTURE_SYMBOLS) counts.symbols[symbol] += stripped.counts[symbol];
 
         const lettered = replaceMeaningLetters(
-          rewriteCrossReferenceTargets(stripped.text, resolve),
+          rewriteCrossReferenceTargets(stripped.text, resolveInDefinition),
           baseFormMeaningCountBySenseId.get(sense.id) ?? 0
         );
         counts.meaningLetters.replaced += lettered.replaced;
@@ -384,6 +489,10 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
         counts.meaningLetters.outOfRange += lettered.outOfRange;
 
         sense.definition = lettered.text;
+        if (sense.glosses)
+          sense.glosses = sense.glosses.map(gloss =>
+            rewriteCrossReferenceTargets(gloss, resolveInGloss)
+          );
       }
     }
   }
@@ -392,5 +501,6 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
     byLanguage,
     unresolved: Array.from(unresolved.values()),
     excludedByDesign: Array.from(excludedByDesign.values()),
+    malformed: Array.from(malformed.values()),
   };
 }

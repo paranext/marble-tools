@@ -331,10 +331,12 @@ async function processLexicalReference(filePath: string, db: Database): Promise<
         const results = await Promise.allSettled(
           batch.map(entry => processEntry(entry, lexRefKey, languageKey, db, filePath, seen))
         );
-        const failure = results.find(
+        const failures = results.filter(
           (result): result is PromiseRejectedResult => result.status === 'rejected'
         );
-        if (failure) throw failure.reason;
+        // Log every failure, since only the first can be thrown
+        for (const failure of failures) console.error('Entry failed:', failure.reason);
+        if (failures.length > 0) throw failures[0].reason;
 
         // Update progress on same line
         const progress = (((i + batch.length) / entryElements.length) * 100).toFixed(1);
@@ -927,7 +929,7 @@ async function main() {
   // Write to a temporary file and move it into place only after a successful import, so a failed
   // import never leaves a partial database at the output path.
   const tempOutput = `${options.output}.tmp`;
-  console.log(`Initializing database at ${options.output}...`);
+  console.log(`Building ${options.output} via ${tempOutput}...`);
   let db: Database | undefined;
   let builtDatabaseComplete = false;
 

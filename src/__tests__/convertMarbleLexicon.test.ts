@@ -11,6 +11,8 @@ interface FixtureOptions {
   meaningAttributes?: string;
   senseAttributes?: string;
   references?: string[];
+  /** The Lemma of a second entry (Id 000002000000000) to add to the file */
+  secondEntryLemma?: string;
 }
 
 function lexiconFile(options: FixtureOptions = {}): string {
@@ -20,15 +22,15 @@ function lexiconFile(options: FixtureOptions = {}): string {
     meaningAttributes = 'Id="000001001001000"',
     senseAttributes = 'LanguageCode="en"',
     references = ['04200100100002'],
+    secondEntryLemma,
   } = options;
   const referenceXml = references.map(ref => `<LEXReference>${ref}</LEXReference>`).join('');
-  return `<?xml version="1.0" encoding="utf-8"?>
-<Lexicon>
-  <Lexicon_Entry ${entryAttributes}>
+  const entryXml = (attributes: string, baseFormId: string, meaningId: string) => `
+  <Lexicon_Entry ${attributes}>
     <BaseForms>
-      <BaseForm ${baseFormAttributes}>
+      <BaseForm ${baseFormId}>
         <LEXMeanings>
-          <LEXMeaning ${meaningAttributes}>
+          <LEXMeaning ${meaningId}>
             <LEXReferences>${referenceXml}</LEXReferences>
             <LEXSenses>
               <LEXSense ${senseAttributes}>
@@ -40,8 +42,26 @@ function lexiconFile(options: FixtureOptions = {}): string {
         </LEXMeanings>
       </BaseForm>
     </BaseForms>
-  </Lexicon_Entry>
+  </Lexicon_Entry>`;
+  const secondEntry = secondEntryLemma
+    ? entryXml(
+        `Id="000002000000000" Lemma="${secondEntryLemma}" Version="3"`,
+        'Id="000002001000000"',
+        'Id="000002001001000"'
+      )
+    : '';
+  return `<?xml version="1.0" encoding="utf-8"?>
+<Lexicon>${entryXml(entryAttributes, baseFormAttributes, meaningAttributes)}${secondEntry}
 </Lexicon>`;
+}
+
+/** The `Id` of each Entry and the text of each Occurrence in a converted language file */
+function readOutput(outputDir: string): { entryIds: string[]; occurrences: string[] } {
+  const xml = fs.readFileSync(path.join(outputDir, 'lexicon_en.xml'), 'utf-8');
+  return {
+    entryIds: Array.from(xml.matchAll(/<Entry [^>]*\bId="([^"]*)"/g), match => match[1]),
+    occurrences: Array.from(xml.matchAll(/<Occurrence [^>]*>([^<]*)</g), match => match[1]),
+  };
 }
 
 describe('convert-marble-lexicon', () => {
@@ -84,7 +104,10 @@ describe('convert-marble-lexicon', () => {
     const result = convert('SDBG', {});
 
     expect(result.status).toBe(0);
-    expect(fs.existsSync(path.join(outputDir, 'lexicon_en.xml'))).toBe(true);
+    expect(readOutput(outputDir)).toEqual({
+      entryIds: ['000001'],
+      occurrences: ['LUK 1:1!1'],
+    });
   }, 60000);
 
   test('fails and names the reference, entry and file for an invalid LEXReference', () => {
@@ -109,6 +132,7 @@ describe('convert-marble-lexicon', () => {
     });
 
     expect(result.status).toBe(0);
+    expect(readOutput(outputDir).occurrences).toEqual(['LUK 1:1!1']);
   }, 60000);
 
   test.each([
@@ -146,15 +170,18 @@ describe('convert-marble-lexicon', () => {
   test('leaves out an SDBH entry with a version below the minimum', () => {
     const result = convert('SDBH', {
       entryAttributes: 'Id="000001000000000" Lemma="lemma" Version="2"',
+      secondEntryLemma: 'other',
     });
 
     expect(result.status).toBe(0);
+    expect(readOutput(outputDir).entryIds).toEqual(['000002']);
   }, 60000);
 
   test('does not use the version of an SDBG entry', () => {
     const result = convert('SDBG', { entryAttributes: 'Id="000001000000000" Lemma="lemma"' });
 
     expect(result.status).toBe(0);
+    expect(readOutput(outputDir).entryIds).toEqual(['000001']);
   }, 60000);
 
   test('fails for a meaning ID that starts with another entry number', () => {
@@ -162,5 +189,21 @@ describe('convert-marble-lexicon', () => {
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('000002001001000');
+  }, 60000);
+
+  test('fails for two entries with the same lemma and different Ids', () => {
+    const result = convert('SDBG', { secondEntryLemma: 'lemma' });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('000001000000000');
+    expect(result.stderr).toContain('000002000000000');
+    expect(result.stderr).toContain('lemma');
+  }, 60000);
+
+  test('keeps two entries with different lemmas apart', () => {
+    const result = convert('SDBG', { secondEntryLemma: 'other' });
+
+    expect(result.status).toBe(0);
+    expect(readOutput(outputDir).entryIds).toEqual(['000001', '000002']);
   }, 60000);
 });

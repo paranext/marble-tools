@@ -1,6 +1,7 @@
 import {
   cleanUpDefinitions,
   createLemmaLookup,
+  findMalformedCrossReferences,
   LemmaIndexEntry,
   replaceMeaningLetters,
   rewriteCrossReferenceTargets,
@@ -96,7 +97,7 @@ describe('createLemmaLookup', () => {
 
 describe('rewriteCrossReferenceTargets', () => {
   test('replaces only the target lemma and keeps a trailing meaning position', () => {
-    const rewrite = jest.fn(() => 'NEW');
+    const rewrite = jest.fn((dictionaryId: string) => ({ dictionaryId, lemma: 'NEW' }));
     expect(
       rewriteCrossReferenceTargets('see {L:text<SDBG:old:000000>} and {L:t2<SDBH:old2>}.', rewrite)
     ).toBe('see {L:text<SDBG:NEW:000000>} and {L:t2<SDBH:NEW>}.');
@@ -111,10 +112,45 @@ describe('rewriteCrossReferenceTargets', () => {
     expect(rewriteCrossReferenceTargets(text, () => undefined)).toBe(text);
   });
 
+  test('writes the dictionary the rewrite returns', () => {
+    expect(
+      rewriteCrossReferenceTargets('{L:t<sdbh:old>}', () => ({
+        dictionaryId: 'SDBH',
+        lemma: 'new',
+      }))
+    ).toBe('{L:t<SDBH:new>}');
+  });
+
   test('leaves a cross-reference without a target alone', () => {
-    const rewrite = jest.fn(() => 'NEW');
+    const rewrite = jest.fn(() => ({ dictionaryId: 'SDBG', lemma: 'NEW' }));
     expect(rewriteCrossReferenceTargets('see {L:text} here', rewrite)).toBe('see {L:text} here');
     expect(rewrite).not.toHaveBeenCalled();
+  });
+});
+
+describe('findMalformedCrossReferences', () => {
+  test.each([
+    ['has no target', 'see {L:abc} here', '{L:abc} here'],
+    ['has no closing brace', 'see {L:abc<SDBH:x> here', '{L:abc<SDBH:x> here'],
+    ['has a prefix that is not letters', 'see {L:abc<SD BH:x>} here', '{L:abc<SD BH:x>} here'],
+    ['has no prefix', '{L:abc<:x>}', '{L:abc<:x>}'],
+  ])('finds a marker that %s', (_, text, excerpt) => {
+    expect(findMalformedCrossReferences(text)).toEqual([excerpt]);
+  });
+
+  test('finds each malformed marker and skips the well-formed one between them', () => {
+    expect(findMalformedCrossReferences('{L:a} {L:b<SDBH:x>} {L:c}')).toEqual([
+      '{L:a} {L:b<SDBH:x>} {L:c}',
+      '{L:c}',
+    ]);
+  });
+
+  test('finds nothing in well-formed cross-references', () => {
+    expect(findMalformedCrossReferences('{L:a<SDBH:x>} {L:b<SDBG:y:000000>} text')).toEqual([]);
+  });
+
+  test('quotes a bounded excerpt', () => {
+    expect(findMalformedCrossReferences(`{L:${'x'.repeat(200)}`)[0]).toHaveLength(60);
   });
 });
 
@@ -164,6 +200,20 @@ describe('replaceMeaningLetters', () => {
     expect(replaceMeaningLetters('[A] [ab] [1]', 5).text).toBe('[A] [ab] [1]');
   });
 });
+
+const emptyReferenceCounts = {
+  exact: 0,
+  nfd: 0,
+  noBreakSpace: 0,
+  alternateLemma: 0,
+  hataf: 0,
+  otherDictionary: 0,
+  unknownDictionary: 0,
+  ambiguous: 0,
+  notEmitted: 0,
+  excludedByDesign: 0,
+  unresolved: 0,
+};
 
 describe('cleanUpDefinitions', () => {
   function sense(id: string, definition: string) {
@@ -222,17 +272,21 @@ describe('cleanUpDefinitions', () => {
         alternateLemma: 0,
         hataf: 1,
         otherDictionary: 1,
+        unknownDictionary: 0,
         ambiguous: 0,
         notEmitted: 1,
         excludedByDesign: 1,
         unresolved: 1,
       },
+      glossCrossReferences: emptyReferenceCounts,
+      malformedCrossReferences: 0,
       symbols: { '= ': 1, '► ': 1, '◄ ': 0, '≈ ': 0 },
       meaningLetters: { replaced: 1, singleMeaning: 1, outOfRange: 0 },
     });
     expect(report.excludedByDesign).toEqual([
       {
         language: 'en',
+        field: 'definition',
         entryId: 'entry-1',
         dictionaryId: 'SDBH',
         target: 'gone',
@@ -243,6 +297,7 @@ describe('cleanUpDefinitions', () => {
     expect(report.unresolved).toEqual([
       {
         language: 'en',
+        field: 'definition',
         entryId: 'entry-1',
         dictionaryId: 'SDBH',
         target: 'missing',
@@ -251,6 +306,7 @@ describe('cleanUpDefinitions', () => {
       },
       {
         language: 'en',
+        field: 'definition',
         entryId: 'entry-1',
         dictionaryId: 'SDBH',
         target: 'onlyFr',
@@ -279,6 +335,7 @@ describe('cleanUpDefinitions', () => {
     expect(report.unresolved).toEqual([
       {
         language: 'en',
+        field: 'definition',
         entryId: 'entry-1',
         dictionaryId: 'SDBG',
         target: 'q',
@@ -306,12 +363,144 @@ describe('cleanUpDefinitions', () => {
     expect(report.unresolved).toEqual([
       {
         language: 'en',
+        field: 'definition',
         entryId: 'entry-1',
         dictionaryId: 'SDBG',
         target: 'q',
         count: 1,
         reason: 'ambiguous (alternateLemma): entries 1, 2',
       },
+    ]);
+  });
+
+  describe('dictionary prefixes', () => {
+    function clean(dictionaryId: string, definition: string, glosses: string[] = []) {
+      const entriesByLanguage = {
+        en: { a: { id: 'entry-1', senses: [{ id: 's1', definition, glosses }] } },
+      };
+      const report = cleanUpDefinitions({
+        dictionaryId,
+        entriesByLanguage,
+        sourceEntries: [entry('1', 'a')],
+        baseFormMeaningCountBySenseId: new Map(),
+      });
+      return { sense: entriesByLanguage.en.a.senses[0], report };
+    }
+
+    test('resolves a prefix that differs from the dictionary ID only in case and writes the canonical one', () => {
+      const { sense, report } = clean('SDBH', '{L:x<sdbh:a>}', ['{L:y<Sdbh:a>}']);
+      expect(sense.definition).toBe('{L:x<SDBH:a>}');
+      expect(sense.glosses).toEqual(['{L:y<SDBH:a>}']);
+      expect(report.byLanguage.en.crossReferences.exact).toBe(1);
+      expect(report.byLanguage.en.glossCrossReferences.exact).toBe(1);
+    });
+
+    test('lists a lower-case target that matches no entry as unresolved', () => {
+      const { sense, report } = clean('SDBG', '{L:x<sdbg:missing:000000>}');
+      expect(sense.definition).toBe('{L:x<sdbg:missing:000000>}');
+      expect(report.unresolved).toMatchObject([{ dictionaryId: 'sdbg', target: 'missing' }]);
+    });
+
+    test.each(['BT-OT', 'REALIA', 'SDBG'])(
+      'leaves a target in the known dictionary %s alone',
+      id => {
+        const { sense, report } = clean('SDBH', `{L:x<${id}:a>}`);
+        expect(sense.definition).toBe(`{L:x<${id}:a>}`);
+        expect(report.byLanguage.en.crossReferences.otherDictionary).toBe(1);
+        expect(report.unresolved).toEqual([]);
+      }
+    );
+
+    test.each(['aSDBH', 'SDB', 'SD', 'sdbg'])(
+      'reports a target with the unknown dictionary %s and leaves it unchanged',
+      id => {
+        const { sense, report } = clean('SDBH', `{L:x<${id}:a>}`);
+        expect(sense.definition).toBe(`{L:x<${id}:a>}`);
+        expect(report.byLanguage.en.crossReferences.unknownDictionary).toBe(1);
+        expect(report.unresolved).toMatchObject([
+          { dictionaryId: id, target: 'a', reason: 'unknown dictionary' },
+        ]);
+      }
+    );
+  });
+
+  test('rewrites cross-reference targets in glosses and counts them apart from definitions', () => {
+    const lemmaA = `${ALEF}\u05b2${BET}`;
+    const entriesByLanguage = {
+      en: {
+        [lemmaA]: {
+          id: 'entry-1',
+          senses: [
+            {
+              id: 's1',
+              definition: '{L:x<SDBH:abc>}',
+              glosses: [`{L:y<SDBH:${ALEF}\u05b0\u05b7${BET}>}`, '{L:z<SDBH:missing>}', 'plain'],
+            },
+          ],
+        },
+        abc: { id: 'entry-2', senses: [{ id: 's2', definition: 'text' }] },
+      },
+    };
+    const report = cleanUpDefinitions({
+      dictionaryId: 'SDBH',
+      entriesByLanguage,
+      sourceEntries: [entry('1', lemmaA), entry('2', 'abc')],
+      baseFormMeaningCountBySenseId: new Map(),
+    });
+    expect(entriesByLanguage.en[lemmaA].senses[0].glosses).toEqual([
+      `{L:y<SDBH:${lemmaA}>}`,
+      '{L:z<SDBH:missing>}',
+      'plain',
+    ]);
+    expect(report.byLanguage.en.glossCrossReferences).toEqual({
+      ...emptyReferenceCounts,
+      hataf: 1,
+      unresolved: 1,
+    });
+    expect(report.byLanguage.en.crossReferences.exact).toBe(1);
+    expect(report.unresolved).toMatchObject([{ field: 'gloss', target: 'missing' }]);
+  });
+
+  test('does not strip symbols or number letters in glosses', () => {
+    const entriesByLanguage = {
+      en: {
+        a: { id: 'entry-1', senses: [{ id: 's1', definition: 'd', glosses: ['= that is [b]'] }] },
+      },
+    };
+    cleanUpDefinitions({
+      dictionaryId: 'SDBH',
+      entriesByLanguage,
+      sourceEntries: [entry('1', 'a')],
+      baseFormMeaningCountBySenseId: new Map([['s1', 3]]),
+    });
+    expect(entriesByLanguage.en.a.senses[0].glosses).toEqual(['= that is [b]']);
+  });
+
+  test('lists malformed markers per language and entry and leaves the text unchanged', () => {
+    const entriesByLanguage = {
+      en: {
+        a: {
+          id: 'entry-1',
+          senses: [{ id: 's1', definition: '{L:x} and {L:y<SDBH:a>} and {L:x}' }],
+        },
+      },
+    };
+    const report = cleanUpDefinitions({
+      dictionaryId: 'SDBH',
+      entriesByLanguage,
+      sourceEntries: [entry('1', 'a')],
+      baseFormMeaningCountBySenseId: new Map(),
+    });
+    expect(entriesByLanguage.en.a.senses[0].definition).toBe('{L:x} and {L:y<SDBH:a>} and {L:x}');
+    expect(report.byLanguage.en.malformedCrossReferences).toBe(2);
+    expect(report.malformed).toEqual([
+      {
+        language: 'en',
+        entryId: 'entry-1',
+        excerpt: '{L:x} and {L:y<SDBH:a>} and {L:x}',
+        count: 1,
+      },
+      { language: 'en', entryId: 'entry-1', excerpt: '{L:x}', count: 1 },
     ]);
   });
 });

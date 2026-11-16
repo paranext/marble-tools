@@ -53,6 +53,7 @@ jobs:
         run: python3 scripts/verify_english_db.py --db english.db --lexicon ../marble-lexicon --previous-db previous-db/lexical.db
 
       - name: Upload English database
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: english-database
@@ -60,6 +61,7 @@ jobs:
           retention-days: 90
 
       - name: Upload XML files
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: xml-files

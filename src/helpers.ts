@@ -548,18 +548,28 @@ export function parseU23003Reference(reference: string): {
   return { bookNum, chapterNum, verseNum, wordNum };
 }
 
+/** The first 14 digits of a reference; trailing notes such as `{N:001}` and whitespace are ignored */
+const reference14 = (reference: string): string => reference.trim().substring(0, 14);
+
+/**
+ * The set of comparison keys of a lexical meaning's references, built once and used to check each
+ * of its contextual meanings with `findConReferencesMissingFromLex`.
+ */
+export function referenceKeys(references: string[]): Set<string> {
+  return new Set(references.map(reference14));
+}
+
 /**
  * Returns the contextual-meaning references (`CONReference`) that are missing from the lexical
- * references (`LEXReferences`) of the lexical meaning they belong to. Only the first 14 digits of
- * each reference are compared; trailing notes such as `{N:001}` and whitespace are ignored.
+ * references (`LEXReferences`) of the lexical meaning they belong to, given as the `referenceKeys`
+ * of those references. Only the first 14 digits of each reference are compared; trailing notes such
+ * as `{N:001}` and whitespace are ignored.
  */
 export function findConReferencesMissingFromLex(
   conReferences: string[],
-  lexReferences: string[]
+  lexReferenceKeys: ReadonlySet<string>
 ): string[] {
-  const reference14 = (reference: string) => reference.trim().substring(0, 14);
-  const lexSet = new Set(lexReferences.map(reference14));
-  return conReferences.map(reference14).filter(reference => !lexSet.has(reference));
+  return conReferences.map(reference14).filter(reference => !lexReferenceKeys.has(reference));
 }
 
 /**

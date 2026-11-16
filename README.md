@@ -38,6 +38,22 @@ Node is pinned to 22.22.1 with [Volta](https://volta.sh/). Without Volta, use a 
    npm run convert-sdbg
    ```
 
+## Checking the English database
+
+`scripts/verify_english_db.py` (Python 3, standard library only) checks a built `english.db` against the MARBLE lexicon XML. It re-derives the expected senses and occurrences from the source rules instead of sharing code with the converter, and exits non-zero when a check fails:
+
+```
+python3 scripts/verify_english_db.py --db english.db --lexicon ../marble-lexicon \
+    [--links ../marble-indexes/Full] [--previous-db path/to/lexical.db]
+```
+
+1. **Senses:** the database's sense IDs equal the lexical meanings the rules include (SDBH: not marked `N` or `X`, entry version 3 or higher; both: has an English sense with a definition or gloss), every sense ID ends in `000`, and the entries match.
+2. **Occurrences:** each sense's occurrences equal the references in its own `LEXReferences` (first 14 digits, even word IDs, word number not 0, each position once). SDBG meanings marked `N` or `X` are senses without occurrences.
+3. **Totals** (with `--previous-db`): entries, lexical senses and distinct word positions of each dictionary may not drop more than 2% (`MAX_DROP_FRACTION`) compared with the previously published database.
+4. **Links** (with `--links`): informational only. Compares the database's sense occurrences with the lexical links in the published `MARBLELinks-*.XML` and prints "in step" or "drift". It never fails, because the links can lag behind lexicon edits.
+
+The `Build English Database` workflow runs checks 1 to 3 after the import, comparing with the database published in `paranext/dependencies`. The script does not check definition or gloss text.
+
 ## Changes to definitions
 
 The conversion changes sense definitions (`DefinitionShort`), in every language, as Paratext 9's dictionary does. Glosses are left as they are.

@@ -43,6 +43,15 @@ jobs:
       - name: Import to SQLite
         run: npm run import-english-to-sqlite
 
+      - name: Download the published English database
+        run: |
+          mkdir -p previous-db
+          curl -fsSL -o previous-db/lexical.db.xz https://media.githubusercontent.com/media/paranext/dependencies/main/lexical-db/lexical.db.xz
+          xz -d previous-db/lexical.db.xz
+
+      - name: Verify English database
+        run: python3 scripts/verify_english_db.py --db english.db --lexicon ../marble-lexicon --previous-db previous-db/lexical.db
+
       - name: Upload English database
         uses: actions/upload-artifact@v4
         with:

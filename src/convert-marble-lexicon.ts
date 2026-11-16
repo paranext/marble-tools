@@ -42,6 +42,7 @@ import {
   DefinitionCleanupReport,
   LOOKUP_STEPS,
   STRUCTURE_SYMBOLS,
+  UNSPACED_SYMBOLS,
 } from './definition-cleanup';
 import {
   buildDomainTree,
@@ -956,6 +957,8 @@ function printDefinitionCleanupReport(report: DefinitionCleanupReport): void {
       glossCrossReferences: glossRefs,
       malformedCrossReferences,
       symbols,
+      unspacedSymbols,
+      glossLeadingEquals,
       meaningLetters: letters,
     } = counts;
     const left = (r: CrossReferenceCounts): string =>
@@ -974,6 +977,11 @@ function printDefinitionCleanupReport(report: DefinitionCleanupReport): void {
       `    structure symbols removed: ` +
         STRUCTURE_SYMBOLS.map(symbol => `"${symbol}" ${symbols[symbol]}`).join(', ')
     );
+    console.log(
+      `    structure symbols removed without a following space: ` +
+        UNSPACED_SYMBOLS.map(symbol => `"${symbol}" ${unspacedSymbols[symbol]}`).join(', ')
+    );
+    console.log(`    glosses with a leading "=" removed: ${glossLeadingEquals}`);
     console.log(
       `    meaning letters: ${letters.replaced} numbered; left: base form with one meaning ` +
         `${letters.singleMeaning}, beyond the base form's meanings ${letters.outOfRange}`

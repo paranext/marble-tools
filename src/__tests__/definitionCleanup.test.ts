@@ -5,6 +5,7 @@ import {
   LemmaIndexEntry,
   replaceMeaningLetters,
   rewriteCrossReferenceTargets,
+  stripLeadingEquals,
   stripStructureSymbols,
 } from '../definition-cleanup';
 
@@ -154,23 +155,65 @@ describe('findMalformedCrossReferences', () => {
   });
 });
 
+const noUnspaced = { '=': 0, '►': 0, '◄': 0, '≈': 0 };
+
 describe('stripStructureSymbols', () => {
   test('removes each structure symbol that is followed by a space, wherever it is', () => {
     expect(stripStructureSymbols('= one ► two ◄ three ≈ four = five')).toEqual({
       text: 'one two three four five',
       counts: { '= ': 2, '► ': 1, '◄ ': 1, '≈ ': 1 },
+      unspaced: noUnspaced,
     });
   });
 
-  test('keeps a symbol not followed by a space, and line breaks', () => {
-    expect(stripStructureSymbols('a=b|c ►')).toEqual({
-      text: 'a=b|c ►',
+  test('keeps an equals sign inside a word, and line breaks', () => {
+    expect(stripStructureSymbols('a=b|c')).toEqual({
+      text: 'a=b|c',
       counts: { '= ': 0, '► ': 0, '◄ ': 0, '≈ ': 0 },
+      unspaced: noUnspaced,
     });
+  });
+
+  test('removes every ►, ◄ and ≈ whatever follows it, and leaves the text around it', () => {
+    expect(stripStructureSymbols('a; ►b ◄c≈d ►')).toEqual({
+      text: 'a; b cd',
+      counts: { '= ': 0, '► ': 0, '◄ ': 0, '≈ ': 0 },
+      unspaced: { '=': 0, '►': 2, '◄': 1, '≈': 1 },
+    });
+  });
+
+  test('removes an equals sign at the start or after whitespace when a non-space follows it', () => {
+    expect(stripStructureSymbols('=man; humans =make an effort; a=b')).toEqual({
+      text: 'man; humans make an effort; a=b',
+      counts: { '= ': 0, '► ': 0, '◄ ': 0, '≈ ': 0 },
+      unspaced: { ...noUnspaced, '=': 2 },
+    });
+  });
+
+  test('keeps an equals sign that has nothing after it, or only spaces', () => {
+    expect(stripStructureSymbols('a =').text).toBe('a =');
+    expect(stripStructureSymbols('=').text).toBe('=');
+  });
+
+  test('keeps an equals sign inside cross-reference markup', () => {
+    const text = '{L:a =b<SDBH:c =d>} =e';
+    expect(stripStructureSymbols(text).text).toBe('{L:a =b<SDBH:c =d>} e');
   });
 
   test('trims the result', () => {
     expect(stripStructureSymbols('text ≈ ').text).toBe('text');
+  });
+});
+
+describe('stripLeadingEquals', () => {
+  test('removes a leading equals sign and the spaces after it', () => {
+    expect(stripLeadingEquals('= to speak much')).toBe('to speak much');
+    expect(stripLeadingEquals('=word')).toBe('word');
+  });
+
+  test('keeps every other equals sign, and all other text, as it is', () => {
+    expect(stripLeadingEquals('a = b')).toBe('a = b');
+    expect(stripLeadingEquals(' ► x =y ')).toBe(' ► x =y ');
   });
 });
 
@@ -281,6 +324,8 @@ describe('cleanUpDefinitions', () => {
       glossCrossReferences: emptyReferenceCounts,
       malformedCrossReferences: 0,
       symbols: { '= ': 1, '► ': 1, '◄ ': 0, '≈ ': 0 },
+      unspacedSymbols: noUnspaced,
+      glossLeadingEquals: 0,
       meaningLetters: { replaced: 1, singleMeaning: 1, outOfRange: 0 },
     });
     expect(report.excludedByDesign).toEqual([
@@ -395,6 +440,14 @@ describe('cleanUpDefinitions', () => {
       expect(report.byLanguage.en.glossCrossReferences.exact).toBe(1);
     });
 
+    test("strips a gloss's leading equals sign and counts it, leaving other gloss text alone", () => {
+      const { sense, report } = clean('SDBH', '=a ►b', ['= x', '►y = z']);
+      expect(sense.definition).toBe('a b');
+      expect(sense.glosses).toEqual(['x', '►y = z']);
+      expect(report.byLanguage.en.glossLeadingEquals).toBe(1);
+      expect(report.byLanguage.en.unspacedSymbols).toEqual({ ...noUnspaced, '=': 1, '►': 1 });
+    });
+
     test('lists a lower-case target that matches no entry as unresolved', () => {
       const { sense, report } = clean('SDBG', '{L:x<sdbg:missing:000000>}');
       expect(sense.definition).toBe('{L:x<sdbg:missing:000000>}');
@@ -464,7 +517,7 @@ describe('cleanUpDefinitions', () => {
   test('does not strip symbols or number letters in glosses', () => {
     const entriesByLanguage = {
       en: {
-        a: { id: 'entry-1', senses: [{ id: 's1', definition: 'd', glosses: ['= that is [b]'] }] },
+        a: { id: 'entry-1', senses: [{ id: 's1', definition: 'd', glosses: ['a = that is [b]'] }] },
       },
     };
     cleanUpDefinitions({
@@ -473,7 +526,7 @@ describe('cleanUpDefinitions', () => {
       sourceEntries: [entry('1', 'a')],
       baseFormMeaningCountBySenseId: new Map([['s1', 3]]),
     });
-    expect(entriesByLanguage.en.a.senses[0].glosses).toEqual(['= that is [b]']);
+    expect(entriesByLanguage.en.a.senses[0].glosses).toEqual(['a = that is [b]']);
   });
 
   test('lists malformed markers per language and entry and leaves the text unchanged', () => {

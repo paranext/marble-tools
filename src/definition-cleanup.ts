@@ -3,7 +3,10 @@
  * dictionary (`ProcessMarkup` in Paratext 9's `DictionaryTab.cs`) and so their cross-references
  * open the entry they mean:
  *
- * - The structure symbols `= `, `► `, `◄ ` and `≈ ` (each followed by a space) are removed.
+ * - The structure symbols `= `, `► `, `◄ ` and `≈ ` (each followed by a space) are removed. Beyond
+ *   Paratext 9, every remaining `►`, `◄` and `≈`, and an `=` that starts the definition or follows
+ *   whitespace and is directly followed by a non-space, are removed too, because the source
+ *   sometimes omits the space after a structure symbol.
  * - Each cross-reference target `{L:text<DICTIONARY:lemma>}` is rewritten to the exact lemma of the
  *   entry it means, because the Dictionary panel looks the target up by exact lemma.
  * - `[a]`, `[b]`, … (a meaning, by position) become `(1)`, `(2)`, … as in Paratext 9.
@@ -11,7 +14,8 @@
  * Glosses are rendered by the Dictionary panel with the same markup parser, so their cross-reference
  * targets are rewritten in the same way. Their symbols and `[a]` letters are left alone: in glosses
  * `=` usually means "that is". Paratext 9 strips the structure symbols from glosses as well; this
- * converter deliberately does not.
+ * converter deliberately does not. The one exception is a gloss that starts with `=` (the
+ * definition marker): that `=` and the spaces after it are removed.
  */
 
 /**
@@ -196,22 +200,61 @@ export function findMalformedCrossReferences(text: string): string[] {
   return malformed;
 }
 
+/** The structure symbols as they are counted when they occur without a following space */
+export const UNSPACED_SYMBOLS = ['=', '►', '◄', '≈'] as const;
+export type UnspacedSymbol = (typeof UNSPACED_SYMBOLS)[number];
+
+/** Skips cross-reference markup, or finds an `=` that starts the text or follows whitespace */
+const UNSPACED_EQUALS_REGEX = /\{L:[^}]*\}|(^|\s)=(?=\S)/g;
+
 /**
- * Removes every structure symbol followed by a space (`= `, `► `, `◄ `, `≈ `) as Paratext 9 does,
- * one symbol after the other, and trims the result. Line breaks (`|`) are left alone.
+ * Removes the structure symbols from a definition:
+ *
+ * 1. Every symbol followed by a space (`= `, `► `, `◄ `, `≈ `), as Paratext 9 does, one symbol
+ *    after the other.
+ * 2. Every `►`, `◄` and `≈` that remains, whatever follows it. The source sometimes omits the space
+ *    after one.
+ * 3. Every `=` that starts the text or follows whitespace and is directly followed by a non-space
+ *    character, for the same reason. An `=` anywhere else (inside a word, inside cross-reference
+ *    markup, or with nothing after it) is kept.
+ *
+ * Only the symbol is removed; the text around it is left as it is. The result is trimmed. Line
+ * breaks (`|`) are left alone.
  */
 export function stripStructureSymbols(text: string): {
   text: string;
+  /** Symbols removed with their following space */
   counts: Record<StructureSymbol, number>;
+  /** Symbols removed in step 2 or 3 */
+  unspaced: Record<UnspacedSymbol, number>;
 } {
   const counts = { '= ': 0, '► ': 0, '◄ ': 0, '≈ ': 0 };
+  const unspaced = { '=': 0, '►': 0, '◄': 0, '≈': 0 };
   let result = text;
   for (const symbol of STRUCTURE_SYMBOLS) {
     const parts = result.split(symbol);
     counts[symbol] = parts.length - 1;
     result = parts.join('');
   }
-  return { text: result.trim(), counts };
+  for (const symbol of ['►', '◄', '≈'] as const) {
+    const parts = result.split(symbol);
+    unspaced[symbol] = parts.length - 1;
+    result = parts.join('');
+  }
+  result = result.replace(UNSPACED_EQUALS_REGEX, (match, space: string | undefined) => {
+    if (space === undefined) return match;
+    unspaced['=']++;
+    return space;
+  });
+  return { text: result.trim(), counts, unspaced };
+}
+
+/**
+ * Removes a leading `=` and the spaces after it from a gloss, which sometimes starts with the
+ * definition marker. Any other `=` stays: inside a gloss it usually means "that is".
+ */
+export function stripLeadingEquals(gloss: string): string {
+  return gloss.replace(/^=\s*/, '');
 }
 
 export interface MeaningLetterCounts {
@@ -327,7 +370,12 @@ export interface LanguageCleanupCounts {
   glossCrossReferences: CrossReferenceCounts;
   /** `{L:` markers in definitions that are not cross-references */
   malformedCrossReferences: number;
+  /** Structure symbols removed with their following space */
   symbols: Record<StructureSymbol, number>;
+  /** Structure symbols removed without one, or (`=`) with a non-space directly after them */
+  unspacedSymbols: Record<UnspacedSymbol, number>;
+  /** Glosses that started with `=` */
+  glossLeadingEquals: number;
   meaningLetters: MeaningLetterCounts;
 }
 
@@ -363,6 +411,8 @@ function emptyCounts(): LanguageCleanupCounts {
     glossCrossReferences: emptyCrossReferenceCounts(),
     malformedCrossReferences: 0,
     symbols: { '= ': 0, '► ': 0, '◄ ': 0, '≈ ': 0 },
+    unspacedSymbols: { '=': 0, '►': 0, '◄': 0, '≈': 0 },
+    glossLeadingEquals: 0,
     meaningLetters: { replaced: 0, singleMeaning: 0, outOfRange: 0 },
   };
 }
@@ -479,6 +529,8 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
 
         const stripped = stripStructureSymbols(sense.definition);
         for (const symbol of STRUCTURE_SYMBOLS) counts.symbols[symbol] += stripped.counts[symbol];
+        for (const symbol of UNSPACED_SYMBOLS)
+          counts.unspacedSymbols[symbol] += stripped.unspaced[symbol];
 
         const lettered = replaceMeaningLetters(
           rewriteCrossReferenceTargets(stripped.text, resolveInDefinition),
@@ -490,9 +542,11 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
 
         sense.definition = lettered.text;
         if (sense.glosses)
-          sense.glosses = sense.glosses.map(gloss =>
-            rewriteCrossReferenceTargets(gloss, resolveInGloss)
-          );
+          sense.glosses = sense.glosses.map(gloss => {
+            const withoutEquals = stripLeadingEquals(gloss);
+            if (withoutEquals !== gloss) counts.glossLeadingEquals++;
+            return rewriteCrossReferenceTargets(withoutEquals, resolveInGloss);
+          });
       }
     }
   }

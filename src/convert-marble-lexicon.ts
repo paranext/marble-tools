@@ -21,6 +21,7 @@ import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import { Command } from 'commander';
 import {
   buildSenseId,
+  cleanId,
   CORPUS_ID,
   DICTIONARY_TYPE,
   ENTRY_PREFIX,
@@ -28,9 +29,10 @@ import {
   extractDefinitionAndGlosses,
   findConReferencesMissingFromLex,
   occurrencesFromLexReferences,
+  parseEntryVersion,
   parseXmlStrict,
-  SENSE_PREFIX,
   transformDomainCode,
+  verifyUniqueEntryAndSenseIds,
 } from './helpers';
 import {
   cleanUpDefinitions,
@@ -121,35 +123,6 @@ function getTaxonomyId(
   senseType: 'Lexical' | 'Contextual'
 ): string {
   return `${dictionaryType}-${senseType}`;
-}
-
-/**
- * Verify that entry IDs and sense IDs are unique within each language. Throws on a duplicate so
- * the conversion fails instead of dropping or merging a meaning.
- */
-function verifyUniqueEntryAndSenseIds(entriesByLanguage: EntriesByLanguage): void {
-  for (const language in entriesByLanguage) {
-    const entryIds = new Set<string>();
-    const senseIds = new Set<string>();
-
-    for (const lemma in entriesByLanguage[language]) {
-      const entry = entriesByLanguage[language][lemma];
-
-      // Check for duplicate entry IDs within the language
-      if (entryIds.has(entry.id)) {
-        throw new Error(`Duplicate entry ID found in language '${language}': ${entry.id}`);
-      }
-      entryIds.add(entry.id);
-
-      // Check for duplicate sense IDs within the language
-      for (const sense of entry.senses) {
-        if (senseIds.has(sense.id)) {
-          throw new Error(`Duplicate sense ID found in language '${language}': ${sense.id}`);
-        }
-        senseIds.add(sense.id);
-      }
-    }
-  }
 }
 
 /**
@@ -258,20 +231,23 @@ function removeEmptyEntriesAndSenses(entriesByLanguage: EntriesByLanguage): {
   };
 }
 
-// Number of contextual meaning references that are absent from their lexical meaning's references
-let conReferencesMissingFromLexCount = 0;
-
 // LEXReferences that yield no occurrence, by reason
 interface SkippedLexReferences {
-  invalid: number;
   odd: number;
-  unknownBook: number;
   /** Each reference to word 0 with the lemma it belongs to */
   wordZero: string[];
   /** References of SDBG meanings marked N or X, which are not linked to the text */
   notLinked: number;
 }
-let skippedLexReferences: SkippedLexReferences;
+
+/** What one pass over the lexicon files counts and collects */
+interface LexiconPassStats {
+  /** Number of contextual meaning references that are absent from their lexical meaning's references */
+  conReferencesMissingFromLex: number;
+  skippedLexReferences: SkippedLexReferences;
+  /** Descriptions of LEXReferences that are invalid or name an unknown book; any fails the pass */
+  invalidLexReferences: string[];
+}
 
 /**
  * Process all XML files in the input directory and generate output files by language.
@@ -289,14 +265,17 @@ function processLexiconFiles(
 
   let fileCount = 0;
   let successCount = 0;
-  conReferencesMissingFromLexCount = 0;
-  skippedLexReferences = { invalid: 0, odd: 0, unknownBook: 0, wordZero: [], notLinked: 0 };
+  const stats: LexiconPassStats = {
+    conReferencesMissingFromLex: 0,
+    skippedLexReferences: { odd: 0, wordZero: [], notLinked: 0 },
+    invalidLexReferences: [],
+  };
 
   for (const filename of files) {
     fileCount++;
     const filePath = path.join(inputDir, filename);
     try {
-      processFile(filePath, entriesByLanguage, dictionaryType, definitionSources);
+      processFile(filePath, entriesByLanguage, dictionaryType, definitionSources, stats);
       successCount++;
       if (fileCount % 10 === 0) {
         console.log(`Processed ${fileCount} files...`);
@@ -311,9 +290,10 @@ function processLexiconFiles(
 
   console.log(`Successfully processed ${successCount} out of ${fileCount} files.`);
   console.log(
-    `CONReferences missing from their lexical meaning's LEXReferences: ${conReferencesMissingFromLexCount}`
+    `CONReferences missing from their lexical meaning's LEXReferences: ${stats.conReferencesMissingFromLex}`
   );
   console.log('LEXReferences skipped:');
+  const { skippedLexReferences } = stats;
   console.log(`  odd word IDs (apparatus readings): ${skippedLexReferences.odd}`);
   console.log(
     `  word 0 (verse-level references): ${skippedLexReferences.wordZero.length}` +
@@ -321,11 +301,18 @@ function processLexiconFiles(
         ? `: ${skippedLexReferences.wordZero.join(', ')}`
         : '')
   );
-  console.log(`  invalid: ${skippedLexReferences.invalid}`);
-  console.log(`  unknown book: ${skippedLexReferences.unknownBook}`);
   console.log(
     `  of senses marked N or X (not linked to the text): ${skippedLexReferences.notLinked}`
   );
+
+  // An invalid reference or an unknown book is a data error, not a rule, so it fails the conversion
+  // after every one has been collected.
+  if (stats.invalidLexReferences.length > 0) {
+    throw new Error(
+      `${stats.invalidLexReferences.length} LEXReference(s) are invalid or name an unknown book:\n  ` +
+        stats.invalidLexReferences.join('\n  ')
+    );
+  }
 
   verifyUniqueEntryAndSenseIds(entriesByLanguage);
 }
@@ -337,10 +324,12 @@ function processFile(
   filePath: string,
   entriesByLanguage: EntriesByLanguage,
   dictionaryType: 'SDBG' | 'SDBH',
-  definitionSources: DefinitionSources
+  definitionSources: DefinitionSources,
+  stats: LexiconPassStats
 ): void {
   const xmlContent = fs.readFileSync(filePath, 'utf8');
   const doc = parseXmlStrict(xmlContent, filePath);
+  const fileName = path.basename(filePath);
 
   // Helper function to get text content safely
   function getTextContent(element: Element | null): string {
@@ -405,10 +394,6 @@ function processFile(
         const value = getTextContent(domainElement).trim();
         // Skip empty codes
         if (!codes || codes.length === 0) {
-          // From Reinier:  when a contextual domain field is ‘-‘ it means that the information
-          // is grammatical rather than contextual. There is nothing wrong with a missing code.
-          if (value === '-') continue;
-
           console.warn(
             `Empty ${childTagName} code with value "${value}" for element ${container.getAttribute('Id')} in file ${path.basename(filePath)}`
           );
@@ -489,7 +474,7 @@ function processFile(
     for (const conMeaning of findElements(lexMeaning, 'ContextualMeaning')) {
       const conReferences = findElements(conMeaning, 'CONReference').map(getTextContent);
       for (const missing of findConReferencesMissingFromLex(conReferences, lexReferences)) {
-        conReferencesMissingFromLexCount++;
+        stats.conReferencesMissingFromLex++;
         console.warn(
           `CONReference ${missing} of entry ${entryId}, lexical meaning ${lexMeaning.getAttribute('Id')}, contextual meaning ${conMeaning.getAttribute('Id')} is not in the lexical meaning's LEXReferences (file ${path.basename(filePath)})`
         );
@@ -510,18 +495,20 @@ function processFile(
     const entry = entries[i] as Element;
     const lemma = entry.getAttribute('Lemma') || '';
     const entryId = entry.getAttribute('Id') || '';
-    const entryVersion = parseInt(entry.getAttribute('Version') || '0');
 
     if (!lemma || !entryId) {
-      console.warn(
-        `Entry ID or lemma is missing for entry ${i} in file ${path.basename(filePath)}`
-      );
-      continue;
+      throw new Error(`Entry ID or lemma is missing for entry ${i} in file ${fileName}`);
     }
+
+    // SDBG is complete, so its version is not used; SDBH entries below the minimum are left out
+    const entryVersion =
+      dictionaryType === DICTIONARY_TYPE.GREEK
+        ? undefined
+        : parseEntryVersion(entry.getAttribute('Version'), entryId);
 
     // Every source entry can be the target of a cross-reference, including those left out below
     const isVersionExcluded =
-      dictionaryType != DICTIONARY_TYPE.GREEK && entryVersion < ENTRY_VERSION.MIN_LEXICAL;
+      entryVersion !== undefined && entryVersion < ENTRY_VERSION.MIN_LEXICAL;
     const allLexMeanings = findElements(entry, 'LEXMeaning');
     const areAllMeaningsExcluded =
       dictionaryType == DICTIONARY_TYPE.HEBREW &&
@@ -565,10 +552,7 @@ function processFile(
       const baseForm = baseForms[bfIdx];
       const baseFormId = baseForm.getAttribute('Id') || '';
       if (!baseFormId) {
-        console.warn(
-          `BaseForm ID is missing for entry ${entryId} in file ${path.basename(filePath)}`
-        );
-        continue;
+        throw new Error(`BaseForm ID is missing for entry ${entryId} in file ${fileName}`);
       }
 
       // Process each lexical meaning
@@ -581,10 +565,9 @@ function processFile(
         if (dictionaryType == DICTIONARY_TYPE.HEBREW && isNotLinked(lexMeaning)) continue;
 
         if (!lexMeaningId) {
-          console.warn(
-            `LexMeaning ID is missing for entry ${entryId}, base form ${baseFormId} in file ${path.basename(filePath)}`
+          throw new Error(
+            `LexMeaning ID is missing for entry ${entryId}, base form ${baseFormId} in file ${fileName}`
           );
-          continue;
         }
 
         // `[a]`, `[b]`, … in the definition are numbered only if the base form has enough meanings
@@ -601,17 +584,20 @@ function processFile(
         // occurrences.
         let occurrences: Occurrence[] = [];
         if (isNotLinked(lexMeaning)) {
-          skippedLexReferences.notLinked += lexReferences.length;
+          stats.skippedLexReferences.notLinked += lexReferences.length;
         } else {
           const parsed = occurrencesFromLexReferences(lexReferences);
           occurrences = parsed.occurrences.map(id => ({ id }));
-          skippedLexReferences.odd += parsed.odd.length;
-          skippedLexReferences.unknownBook += parsed.unknownBook.length;
-          skippedLexReferences.invalid += parsed.invalid.length;
-          skippedLexReferences.wordZero.push(...parsed.wordZero.map(id => `${id} (${lemma})`));
+          stats.skippedLexReferences.odd += parsed.odd.length;
+          stats.skippedLexReferences.wordZero.push(
+            ...parsed.wordZero.map(id => `${id} (${lemma})`)
+          );
+          const where = `entry ${entryId}, lexical meaning ${lexMeaningId}, file ${fileName}`;
           for (const invalid of parsed.invalid)
-            console.warn(
-              `Invalid LEXReference "${invalid}" in entry ${entryId}, lexical meaning ${lexMeaningId} in file ${path.basename(filePath)}`
+            stats.invalidLexReferences.push(`invalid LEXReference "${invalid}" in ${where}`);
+          for (const unknownBook of parsed.unknownBook)
+            stats.invalidLexReferences.push(
+              `LEXReference ${unknownBook} has an unknown book in ${where}`
             );
         }
 
@@ -638,10 +624,9 @@ function processFile(
         for (const lexSense of lexSenses) {
           const languageCode = lexSense.getAttribute('LanguageCode') || '';
           if (!languageCode) {
-            console.warn(
-              `Language code is missing for LEXSense in entry ${entryId}, base form ${baseFormId} in file ${path.basename(filePath)}`
+            throw new Error(
+              `Language code is missing for LEXSense in entry ${entryId}, base form ${baseFormId} in file ${fileName}`
             );
-            continue;
           }
 
           const { definition, glosses } = extractDefinitionAndGlosses(lexSense);
@@ -1020,23 +1005,6 @@ function writeOutputFile(
   // Create the Entries container element
   const entriesElem = doc.createElement('Entries');
   root.appendChild(entriesElem);
-
-  /**
-   * Helper function to clean IDs:
-   * 1. Remove the prefix (entry-/sense-)
-   * 2. Trim IDs to the appropriate length
-   */
-  function cleanId(id: string): string {
-    // From https://docs.google.com/document/d/1sxYArR24YxjxJDd-r1talTlK3YGKpUNPMK24z8RU1Tg
-    // 6 digits representing the entry and 9 digits representing each level
-    // (base form index, lexical meaning index, contextual meaning index)
-    if (id.startsWith(ENTRY_PREFIX))
-      return id.substring(ENTRY_PREFIX.length, ENTRY_PREFIX.length + 6);
-    else if (id.startsWith(SENSE_PREFIX))
-      return id.substring(SENSE_PREFIX.length, SENSE_PREFIX.length + 15);
-    // If the ID doesn't start with either prefix, return it as is
-    else return id;
-  }
 
   // Add entries
   const sortedLemmas = Object.keys(entries).sort();

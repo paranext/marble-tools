@@ -6,9 +6,9 @@ import sqlite3 from 'sqlite3';
 
 const repoRoot = path.resolve(__dirname, '../..');
 
-function lexiconXml(entries: string, attributes = ''): string {
+function lexiconXml(entries: string, attributes = '', language = 'en'): string {
   return `<?xml version="1.0" encoding="utf-8"?>
-<LexicalReferenceText Id="TEST" DataVersion="1" SchemaVersion="1.0" Language="en" ${attributes}>
+<LexicalReferenceText Id="TEST" DataVersion="1" SchemaVersion="1.0" Language="${language}" ${attributes}>
   <Entries>${entries}</Entries>
 </LexicalReferenceText>`;
 }
@@ -152,5 +152,76 @@ describe('import-lexicon-to-sqlite', () => {
 
     expect(result.status).not.toBe(0);
     expect(await countRows(outputFile, 'Senses')).toBe(1);
+  }, 60000);
+
+  test('imports two language files of one dictionary into shared entries', async () => {
+    const entries = entryXml('E1', 'one', ['S1']) + entryXml('E2', 'two', ['S2']);
+    fs.writeFileSync(path.join(inputDir, 'en.xml'), lexiconXml(entries, '', 'en'));
+    fs.writeFileSync(path.join(inputDir, 'fr.xml'), lexiconXml(entries, '', 'fr'));
+
+    const result = runImport(inputDir, outputFile);
+
+    expect(result.status).toBe(0);
+    expect(await countRows(outputFile, 'Entries')).toBe(2);
+    expect(await countRows(outputFile, 'Senses')).toBe(4);
+    expect(await countRows(outputFile, 'Languages')).toBe(2);
+  }, 60000);
+
+  test('exits non-zero when a second language gives an entry Id a different lemma', () => {
+    fs.writeFileSync(
+      path.join(inputDir, 'en.xml'),
+      lexiconXml(entryXml('E1', 'one', ['S1']), '', 'en')
+    );
+    fs.writeFileSync(
+      path.join(inputDir, 'fr.xml'),
+      lexiconXml(entryXml('E1', 'uno', ['S1']), '', 'fr')
+    );
+
+    const result = runImport(inputDir, outputFile);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('E1');
+    expect(fs.existsSync(outputFile)).toBe(false);
+  }, 60000);
+
+  test('exits non-zero when a second language gives a lemma to a different entry Id', () => {
+    fs.writeFileSync(
+      path.join(inputDir, 'en.xml'),
+      lexiconXml(entryXml('E1', 'one', ['S1']), '', 'en')
+    );
+    fs.writeFileSync(
+      path.join(inputDir, 'fr.xml'),
+      lexiconXml(entryXml('E2', 'one', ['S1']), '', 'fr')
+    );
+
+    const result = runImport(inputDir, outputFile);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('E2');
+  }, 60000);
+
+  test('exits non-zero when a lemma is duplicated within one file', () => {
+    fs.writeFileSync(
+      path.join(inputDir, 'dup.xml'),
+      lexiconXml(entryXml('E1', 'one', ['S1']) + entryXml('E2', 'one', ['S2']))
+    );
+
+    const result = runImport(inputDir, outputFile);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('Duplicate lemma');
+  }, 60000);
+
+  test('keeps the finished temporary database when moving it into place fails', () => {
+    fs.writeFileSync(path.join(inputDir, 'ok.xml'), lexiconXml(entryXml('E1', 'one', ['S1'])));
+    // A non-empty directory at the output path makes the final rename fail
+    fs.mkdirSync(outputFile);
+    fs.writeFileSync(path.join(outputFile, 'blocker'), 'x');
+
+    const result = runImport(inputDir, outputFile);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(`${outputFile}.tmp`);
+    expect(fs.existsSync(`${outputFile}.tmp`)).toBe(true);
   }, 60000);
 });

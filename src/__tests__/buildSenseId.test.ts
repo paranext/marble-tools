@@ -17,8 +17,8 @@ describe('buildSenseId', () => {
     );
   });
 
-  test('keeps the three trailing zeros of a lexical meaning', () => {
-    expect(buildSenseId('000583000000000', '001002000')).toMatch(/000$/);
+  test('throws when a 15-digit meaning ID starts with a different entry number', () => {
+    expect(() => buildSenseId('000583000000000', '000584001002000')).toThrow(/different entry/);
   });
 
   test('accepts a 6-digit entry ID', () => {

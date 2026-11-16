@@ -294,10 +294,11 @@ export const bookCodeToNumber: Record<string, number> = {
  * The result is `sense-` followed by 15 digits: the entry number (the first 6 digits of the entry
  * ID) and the last 9 digits of the meaning ID. The source data writes meaning IDs either as 15
  * digits (entry number + 9) or as the bare 9 digits, and both forms give the same sense ID.
- * A lexical meaning's 9 digits end in `000`.
+ * A lexical meaning's 9 digits end in `000`; this is not checked.
  *
- * Throws if either ID is not all digits or is too short, so a malformed ID stops the conversion
- * instead of producing a bad sense ID.
+ * Throws if either ID is not all digits or has the wrong length, or if a 15-digit meaning ID
+ * starts with a different entry number than the entry, so a malformed or misplaced ID stops the
+ * conversion instead of producing a bad sense ID.
  */
 export function buildSenseId(entryId: string, meaningId: string): string {
   if (!/^\d{6,}$/.test(entryId)) {
@@ -308,7 +309,13 @@ export function buildSenseId(entryId: string, meaningId: string): string {
       `Cannot build a sense ID: meaning ID "${meaningId}" is not 9 or 15 digits (entry ID "${entryId}")`
     );
   }
-  return `${SENSE_PREFIX}${entryId.substring(0, 6)}${meaningId.slice(-9)}`;
+  const entryNumber = entryId.substring(0, 6);
+  if (meaningId.length === 15 && meaningId.substring(0, 6) !== entryNumber) {
+    throw new Error(
+      `Cannot build a sense ID: meaning ID "${meaningId}" starts with a different entry number than entry ID "${entryId}"`
+    );
+  }
+  return `${SENSE_PREFIX}${entryNumber}${meaningId.slice(-9)}`;
 }
 
 /**
@@ -556,20 +563,163 @@ export function findConReferencesMissingFromLex(
 }
 
 /**
- * Parses XML text, throwing on any well-formedness error. xmldom's default handler only logs
- * errors and returns a partial document, which would silently drop the data after the error.
- * Warnings are logged but do not fail the parse.
+ * Throws if the start and end tags of the XML are not properly nested. xmldom does not report a
+ * mismatched or missing end tag (`<a>text</b>`, or an end tag for an outer element while an inner
+ * one is still open), it quietly repairs the tree, so this checks the tag structure on its own.
+ * Comments, CDATA sections, processing instructions, the DOCTYPE and self-closing tags are skipped.
+ */
+export function checkTagBalance(xml: string, sourceName: string): void {
+  const fail = (message: string, position: number): never => {
+    const line = xml.substring(0, position).split('\n').length;
+    throw new Error(`Invalid XML in ${sourceName}: ${message} (line ${line})`);
+  };
+  const skipPast = (terminator: string, from: number, what: string): number => {
+    const end = xml.indexOf(terminator, from);
+    if (end === -1) return fail(`unterminated ${what}`, from);
+    return end + terminator.length;
+  };
+
+  const open: { name: string; position: number }[] = [];
+  let i = 0;
+  while (i < xml.length) {
+    const lt = xml.indexOf('<', i);
+    if (lt === -1) break;
+    if (xml.startsWith('<!--', lt)) {
+      i = skipPast('-->', lt + 4, 'comment');
+    } else if (xml.startsWith('<![CDATA[', lt)) {
+      i = skipPast(']]>', lt + 9, 'CDATA section');
+    } else if (xml.startsWith('<?', lt)) {
+      i = skipPast('?>', lt + 2, 'processing instruction');
+    } else if (xml.startsWith('<!', lt)) {
+      // DOCTYPE: ends at the first '>' outside an internal subset in square brackets
+      let depth = 0;
+      let j = lt + 2;
+      while (j < xml.length && !(xml[j] === '>' && depth === 0)) {
+        if (xml[j] === '[') depth += 1;
+        else if (xml[j] === ']') depth -= 1;
+        j += 1;
+      }
+      if (j >= xml.length) fail('unterminated declaration', lt);
+      i = j + 1;
+    } else {
+      // A start or end tag: find its closing '>', skipping any '>' inside quoted attribute values
+      let j = lt + 1;
+      let quote = '';
+      while (j < xml.length && (quote || xml[j] !== '>')) {
+        if (quote) {
+          if (xml[j] === quote) quote = '';
+        } else if (xml[j] === '"' || xml[j] === "'") {
+          quote = xml[j];
+        }
+        j += 1;
+      }
+      if (j >= xml.length) fail('unterminated tag', lt);
+      const body = xml.substring(lt + 1, j);
+      i = j + 1;
+
+      if (body.startsWith('/')) {
+        const name = body.substring(1).trim();
+        const top = open.pop();
+        if (!top) fail(`end tag </${name}> has no matching start tag`, lt);
+        else if (top.name !== name) {
+          fail(
+            `end tag </${name}> does not match start tag <${top.name}> from line ${
+              xml.substring(0, top.position).split('\n').length
+            }`,
+            lt
+          );
+        }
+      } else if (!body.endsWith('/')) {
+        const name = /^[^\s/]+/.exec(body)?.[0];
+        if (!name) fail('tag without a name', lt);
+        else open.push({ name, position: lt });
+      }
+    }
+  }
+
+  const unclosed = open.pop();
+  if (unclosed) fail(`start tag <${unclosed.name}> is never closed`, unclosed.position);
+}
+
+/**
+ * Parses XML text, throwing on any well-formedness error that xmldom or the tag-balance check
+ * detects. xmldom's default handler only logs errors and returns a partial document, which would
+ * silently drop the data after the error, and it does not report mismatched end tags at all, so the
+ * tag structure is checked separately by `checkTagBalance`. xmldom warnings, errors and fatal
+ * errors all fail the parse. This is not a full validator: it does not check, for example, that
+ * attribute values or entity references are valid.
  */
 export function parseXmlStrict(xml: string, sourceName: string): Document {
   const fail = (message: string) => {
     throw new Error(`Invalid XML in ${sourceName}: ${message.trim()}`);
   };
+  checkTagBalance(xml, sourceName);
   return new DOMParser({
     locator: {},
     errorHandler: {
-      warning: (message: string) => console.warn(`XML warning in ${sourceName}: ${message.trim()}`),
+      warning: fail,
       error: fail,
       fatalError: fail,
     },
   }).parseFromString(xml, 'text/xml');
+}
+
+/**
+ * Parses the `Version` attribute of a `Lexicon_Entry`. Throws if it is missing or not a whole
+ * number, because a version that reads as NaN would compare as "not below the minimum" and let a
+ * malformed entry through.
+ */
+export function parseEntryVersion(rawVersion: string | null | undefined, entryId: string): number {
+  const trimmed = (rawVersion ?? '').trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(`Entry ${entryId} has a missing or non-numeric Version: "${rawVersion ?? ''}"`);
+  }
+  return parseInt(trimmed, 10);
+}
+
+/**
+ * Converts an internal entry or sense ID to the ID that is written to the output:
+ * - An entry ID (`entry-` followed by the source entry ID) becomes the 6-digit entry number.
+ * - A sense ID (`sense-` followed by 15 digits) becomes those 15 digits: the entry number followed
+ *   by the 9 digits of the lexical meaning's ID.
+ * Any other ID is returned as is.
+ */
+export function cleanId(id: string): string {
+  if (id.startsWith(ENTRY_PREFIX))
+    return id.substring(ENTRY_PREFIX.length, ENTRY_PREFIX.length + 6);
+  if (id.startsWith(SENSE_PREFIX))
+    return id.substring(SENSE_PREFIX.length, SENSE_PREFIX.length + 15);
+  return id;
+}
+
+/**
+ * Verifies that entry IDs and sense IDs are unique within each language, as they are written to
+ * the output (entries by their 6-digit entry number). Throws on a duplicate so the conversion
+ * fails instead of dropping or merging a meaning.
+ */
+export function verifyUniqueEntryAndSenseIds(
+  entriesByLanguage: Record<string, Record<string, { id: string; senses: { id: string }[] }>>
+): void {
+  for (const language of Object.keys(entriesByLanguage)) {
+    const entryIds = new Set<string>();
+    const senseIds = new Set<string>();
+
+    for (const entry of Object.values(entriesByLanguage[language])) {
+      const outputEntryId = cleanId(entry.id);
+      if (entryIds.has(outputEntryId)) {
+        throw new Error(
+          `Duplicate entry ID found in language '${language}': ${outputEntryId} (from ${entry.id})`
+        );
+      }
+      entryIds.add(outputEntryId);
+
+      for (const sense of entry.senses) {
+        const outputSenseId = cleanId(sense.id);
+        if (senseIds.has(outputSenseId)) {
+          throw new Error(`Duplicate sense ID found in language '${language}': ${outputSenseId}`);
+        }
+        senseIds.add(outputSenseId);
+      }
+    }
+  }
 }

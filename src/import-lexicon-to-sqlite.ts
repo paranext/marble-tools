@@ -322,13 +322,14 @@ async function processLexicalReference(filePath: string, db: Database): Promise<
     if (entriesElement) {
       const entryElements = entriesElement.getElementsByTagName('Entry');
       const batchSize = 100;
+      const seen: SeenEntries = { ids: new Set(), lemmas: new Set() };
 
       for (let i = 0; i < entryElements.length; i += batchSize) {
         const batch = Array.from(entryElements).slice(i, i + batchSize);
         // Wait for every entry to settle before failing, so no entry is still writing when the
         // transaction is rolled back.
         const results = await Promise.allSettled(
-          batch.map(entry => processEntry(entry, lexRefKey, languageKey, db, filePath))
+          batch.map(entry => processEntry(entry, lexRefKey, languageKey, db, filePath, seen))
         );
         const failure = results.find(
           (result): result is PromiseRejectedResult => result.status === 'rejected'
@@ -347,8 +348,15 @@ async function processLexicalReference(filePath: string, db: Database): Promise<
     await db.exec('COMMIT');
     console.log(`Successfully processed ${filePath}`);
   } catch (error: unknown) {
-    // Rollback the transaction on error
-    await db.exec('ROLLBACK');
+    // Roll back, but never let a failing rollback hide the error that caused it
+    try {
+      await db.exec('ROLLBACK');
+    } catch (rollbackError: unknown) {
+      console.error(
+        'Rollback failed:',
+        rollbackError instanceof Error ? rollbackError.message : rollbackError
+      );
+    }
     console.error(`Error processing ${filePath}:`, error instanceof Error ? error.message : error);
 
     if (verbose) {
@@ -531,12 +539,59 @@ async function processSubDomain(
   }
 }
 
+// Entry Ids and lemmas already seen in one file, to catch duplicates within the file
+interface SeenEntries {
+  ids: Set<string>;
+  lemmas: Set<string>;
+}
+
+// Entries are shared by every language file of a dictionary: the first file inserts the row and later
+// files must find the same Id with the same lemma. Returns the key of the entry row.
+async function insertOrFindEntry(
+  db: Database,
+  refTextKey: number,
+  entrySourceId: string,
+  lemma: string
+): Promise<number> {
+  const result = await insert(db, 'Entries', {
+    Id: entrySourceId,
+    Lemma: lemma,
+    LexicalReferenceTextKey: refTextKey,
+  });
+  if (result.changes) return result.lastID;
+
+  const byId = await safeGet(
+    db,
+    'SELECT EntryKey, Lemma FROM Entries WHERE Id = ? AND LexicalReferenceTextKey = ?',
+    [entrySourceId, refTextKey],
+    'Get entry by Id'
+  );
+  if (byId) {
+    if (byId.Lemma !== lemma) {
+      throw new Error(
+        `Entry Id ${entrySourceId} has lemma "${lemma}" but an earlier file gave it lemma "${byId.Lemma}"`
+      );
+    }
+    return byId.EntryKey;
+  }
+  const byLemma = await safeGet(
+    db,
+    'SELECT Id FROM Entries WHERE Lemma = ? AND LexicalReferenceTextKey = ?',
+    [lemma, refTextKey],
+    'Get entry by lemma'
+  );
+  throw new Error(
+    `Lemma "${lemma}" of entry Id ${entrySourceId} already belongs to entry Id ${byLemma?.Id}`
+  );
+}
+
 async function processEntry(
   entryElement: Element,
   refTextKey: number,
   languageKey: number,
   db: Database,
-  filePath: string
+  filePath: string,
+  seen: SeenEntries
 ): Promise<void> {
   const entrySourceId = entryElement.getAttribute('Id');
   const lemma = entryElement.getAttribute('Lemma');
@@ -547,13 +602,18 @@ async function processEntry(
     );
   }
 
+  // Check and record synchronously, before any await, so concurrent entries cannot interleave
+  if (seen.ids.has(entrySourceId)) {
+    throw new Error(`Duplicate entry Id ${entrySourceId} in ${filePath}`);
+  }
+  if (seen.lemmas.has(lemma)) {
+    throw new Error(`Duplicate lemma "${lemma}" (entry Id ${entrySourceId}) in ${filePath}`);
+  }
+  seen.ids.add(entrySourceId);
+  seen.lemmas.add(lemma);
+
   try {
-    const entryKey = await insertNewAndGetKey(
-      db,
-      'Entries',
-      { Id: entrySourceId, Lemma: lemma, LexicalReferenceTextKey: refTextKey },
-      `entry Id or lemma (Id ${entrySourceId}, lemma ${lemma})`
-    );
+    const entryKey = await insertOrFindEntry(db, refTextKey, entrySourceId, lemma);
 
     // Process entry-level StrongsCodes if present
     const strongsCodesElement = findChildElementByName(entryElement, 'StrongsCodes');
@@ -868,9 +928,11 @@ async function main() {
   // import never leaves a partial database at the output path.
   const tempOutput = `${options.output}.tmp`;
   console.log(`Initializing database at ${options.output}...`);
-  const db = await initializeDatabase(tempOutput, options.schema);
+  let db: Database | undefined;
+  let builtDatabaseComplete = false;
 
   try {
+    db = await initializeDatabase(tempOutput, options.schema);
     for (const inputDir of options.input) {
       console.log(`Processing directory: ${inputDir}`);
       await processDirectory(inputDir, db);
@@ -880,12 +942,19 @@ async function main() {
     await optimizeDatabase(db);
 
     await db.close();
+    db = undefined;
+    builtDatabaseComplete = true;
     fs.renameSync(tempOutput, options.output);
     console.log('Import completed successfully!');
   } catch (error: unknown) {
     console.error('Error during import:', error instanceof Error ? error.message : error);
-    await db.close().catch(() => undefined);
-    fs.rmSync(tempOutput, { force: true });
+    await db?.close().catch(() => undefined);
+    if (builtDatabaseComplete) {
+      // The database was fully built; only moving it into place failed, so keep it.
+      console.error(`The finished database was kept at ${tempOutput}`);
+    } else {
+      fs.rmSync(tempOutput, { force: true });
+    }
     process.exit(1);
   }
 }

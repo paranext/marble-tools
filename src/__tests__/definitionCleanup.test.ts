@@ -3,6 +3,7 @@ import {
   createLemmaLookup,
   findMalformedCrossReferences,
   LemmaIndexEntry,
+  LinkedMeaningNumber,
   replaceMeaningLetters,
   rewriteCrossReferenceTargets,
   stripLeadingEquals,
@@ -219,11 +220,10 @@ describe('stripLeadingEquals', () => {
 
 describe('replaceMeaningLetters', () => {
   test('replaces each letter with its position in the alphabet, as Paratext 9 does', () => {
-    expect(replaceMeaningLetters('see {L:x<SDBG:y:000001>}[b] and [c]', 3)).toEqual({
-      text: 'see {L:x<SDBG:y:000001>}(2) and (3)',
+    expect(replaceMeaningLetters('see [b] and [c]', 3)).toEqual({
+      ...noLetters,
+      text: 'see (2) and (3)',
       replaced: 2,
-      singleMeaning: 0,
-      outOfRange: 0,
     });
   });
 
@@ -242,7 +242,63 @@ describe('replaceMeaningLetters', () => {
   test('ignores brackets around anything but one lowercase letter', () => {
     expect(replaceMeaningLetters('[A] [ab] [1]', 5).text).toBe('[A] [ab] [1]');
   });
+
+  describe('a letter directly after a link', () => {
+    // The linked entry's second meaning is shown as number 5
+    const numbers: LinkedMeaningNumber = (target, meaningIndex) =>
+      target.lemma === 'known' ? (meaningIndex === 1 ? 5 : 'noMeaning') : 'unresolved';
+
+    test('is numbered by the linked entry, not by the current one', () => {
+      expect(replaceMeaningLetters('{L:x<SDBG:known:000001>}[b]', 1, numbers)).toEqual({
+        ...noLetters,
+        text: '{L:x<SDBG:known:000001>}(5)',
+        linkedReplaced: 1,
+        linkedPositionAgrees: 1,
+      });
+    });
+
+    test('reports a meaning position that names another meaning, or none', () => {
+      expect(
+        replaceMeaningLetters('{L:x<SDBG:known:000000>}[b] {L:y<SDBG:known>}[b]', 1, numbers)
+      ).toMatchObject({ linkedReplaced: 2, linkedPositionDiffers: 1, linkedPositionAbsent: 1 });
+    });
+
+    test('is left alone when the linked entry has no such meaning', () => {
+      expect(replaceMeaningLetters('{L:x<SDBG:known>}[c]', 9, numbers)).toEqual({
+        ...noLetters,
+        text: '{L:x<SDBG:known>}[c]',
+        linkedNoMeaning: 1,
+      });
+    });
+
+    test('is left alone when the link does not resolve, whatever the current entry has', () => {
+      expect(replaceMeaningLetters('{L:x<SDBG:other>}[a]', 9, numbers)).toEqual({
+        ...noLetters,
+        text: '{L:x<SDBG:other>}[a]',
+        linkedUnresolved: 1,
+      });
+    });
+
+    test('does not affect a letter that is not directly after a link', () => {
+      expect(replaceMeaningLetters('{L:x<SDBG:known>} [b] [a]', 2, numbers)).toMatchObject({
+        text: '{L:x<SDBG:known>} (2) (1)',
+        replaced: 2,
+      });
+    });
+  });
 });
+
+const noLetters = {
+  replaced: 0,
+  singleMeaning: 0,
+  outOfRange: 0,
+  linkedReplaced: 0,
+  linkedUnresolved: 0,
+  linkedNoMeaning: 0,
+  linkedPositionAgrees: 0,
+  linkedPositionDiffers: 0,
+  linkedPositionAbsent: 0,
+};
 
 const emptyReferenceCounts = {
   exact: 0,
@@ -298,6 +354,7 @@ describe('cleanUpDefinitions', () => {
         ['s1c', 1],
         ['s2a', 1],
       ]),
+      meaningSenseIdsByEntryId: new Map(),
     });
 
     expect(entriesByLanguage.en[lemmaA].senses.map(s => s.definition)).toEqual([
@@ -326,7 +383,7 @@ describe('cleanUpDefinitions', () => {
       symbols: { '= ': 1, '► ': 1, '◄ ': 0, '≈ ': 0 },
       unspacedSymbols: noUnspaced,
       glossLeadingEquals: 0,
-      meaningLetters: { replaced: 1, singleMeaning: 1, outOfRange: 0 },
+      meaningLetters: { ...noLetters, replaced: 1, singleMeaning: 1 },
     });
     expect(report.excludedByDesign).toEqual([
       {
@@ -376,6 +433,7 @@ describe('cleanUpDefinitions', () => {
       entriesByLanguage,
       sourceEntries: [entry('1', 'a')],
       baseFormMeaningCountBySenseId: new Map([['s1', 1]]),
+      meaningSenseIdsByEntryId: new Map(),
     });
     expect(report.unresolved).toEqual([
       {
@@ -402,6 +460,7 @@ describe('cleanUpDefinitions', () => {
       entriesByLanguage,
       sourceEntries: [entry('1', 'a', ['q']), entry('2', 'b', ['q'])],
       baseFormMeaningCountBySenseId: new Map(),
+      meaningSenseIdsByEntryId: new Map(),
     });
     expect(entriesByLanguage.en.a.senses[0].definition).toBe('{L:x<SDBG:q:000000>}');
     expect(report.byLanguage.en.crossReferences.ambiguous).toBe(1);
@@ -428,6 +487,7 @@ describe('cleanUpDefinitions', () => {
         entriesByLanguage,
         sourceEntries: [entry('1', 'a')],
         baseFormMeaningCountBySenseId: new Map(),
+        meaningSenseIdsByEntryId: new Map(),
       });
       return { sense: entriesByLanguage.en.a.senses[0], report };
     }
@@ -499,6 +559,7 @@ describe('cleanUpDefinitions', () => {
       entriesByLanguage,
       sourceEntries: [entry('1', lemmaA), entry('2', 'abc')],
       baseFormMeaningCountBySenseId: new Map(),
+      meaningSenseIdsByEntryId: new Map(),
     });
     expect(entriesByLanguage.en[lemmaA].senses[0].glosses).toEqual([
       `{L:y<SDBH:${lemmaA}>}`,
@@ -525,6 +586,7 @@ describe('cleanUpDefinitions', () => {
       entriesByLanguage,
       sourceEntries: [entry('1', 'a')],
       baseFormMeaningCountBySenseId: new Map([['s1', 3]]),
+      meaningSenseIdsByEntryId: new Map(),
     });
     expect(entriesByLanguage.en.a.senses[0].glosses).toEqual(['a = that is [b]']);
   });
@@ -543,6 +605,7 @@ describe('cleanUpDefinitions', () => {
       entriesByLanguage,
       sourceEntries: [entry('1', 'a')],
       baseFormMeaningCountBySenseId: new Map(),
+      meaningSenseIdsByEntryId: new Map(),
     });
     expect(entriesByLanguage.en.a.senses[0].definition).toBe('{L:x} and {L:y<SDBH:a>} and {L:x}');
     expect(report.byLanguage.en.malformedCrossReferences).toBe(2);
@@ -555,5 +618,73 @@ describe('cleanUpDefinitions', () => {
       },
       { language: 'en', entryId: 'entry-1', excerpt: '{L:x}', count: 1 },
     ]);
+  });
+
+  describe('meaning letters after a link', () => {
+    // Linked entry "multi" has two base forms; base form 1 has three meanings, the middle one is
+    // not output, so the panel numbers the output senses 1 to 4 across the whole entry
+    const multiSenses = ['m00', 'm10', 'm12', 'm01'].map(id => sense(id, 'meaning'));
+    const meaningSenseIdsByEntryId = new Map([
+      [
+        '2',
+        [
+          ['m00', 'm01'],
+          ['m10', 'm11', 'm12'],
+        ],
+      ],
+    ]);
+
+    function clean(definition: string, currentEntryMeanings = 1) {
+      const entriesByLanguage = {
+        en: {
+          current: { id: 'entry-1', lemma: 'current', senses: [sense('c0', definition)] },
+          multi: { id: 'entry-2', lemma: 'multi', senses: multiSenses },
+        },
+      };
+      const report = cleanUpDefinitions({
+        dictionaryId: 'SDBG',
+        entriesByLanguage,
+        sourceEntries: [entry('1', 'current'), entry('2', 'multi')],
+        baseFormMeaningCountBySenseId: new Map([['c0', currentEntryMeanings]]),
+        meaningSenseIdsByEntryId,
+      });
+      return { definition: entriesByLanguage.en.current.senses[0].definition, report };
+    }
+
+    test('numbers a letter by the linked entry when the current entry has one meaning', () => {
+      const { definition, report } = clean('{L:x<SDBG:multi:000001>}[b]');
+      expect(definition).toBe('{L:x<SDBG:multi:000001>}(4)');
+      expect(report.byLanguage.en.meaningLetters).toMatchObject({
+        linkedReplaced: 1,
+        linkedPositionAgrees: 1,
+      });
+    });
+
+    test('uses the base form the target names', () => {
+      expect(clean('{L:x<SDBG:multi:001002>}[c]').definition).toBe('{L:x<SDBG:multi:001002>}(3)');
+    });
+
+    test('uses the first base form when the target names none', () => {
+      expect(clean('{L:x<SDBG:multi>}[a]').definition).toBe('{L:x<SDBG:multi>}(1)');
+    });
+
+    test('leaves a letter beyond the linked entry meanings, or for a meaning not output', () => {
+      const { definition, report } = clean(
+        '{L:x<SDBG:multi:000000>}[c] {L:y<SDBG:multi:001000>}[b]'
+      );
+      expect(definition).toBe('{L:x<SDBG:multi:000000>}[c] {L:y<SDBG:multi:001000>}[b]');
+      expect(report.byLanguage.en.meaningLetters.linkedNoMeaning).toBe(2);
+    });
+
+    test('leaves a letter after a link that does not resolve', () => {
+      const { definition, report } = clean('{L:x<SDBG:missing:000000>}[a]');
+      expect(definition).toBe('{L:x<SDBG:missing:000000>}[a]');
+      expect(report.byLanguage.en.meaningLetters.linkedUnresolved).toBe(1);
+    });
+
+    test('numbers a letter with no link before it by the current entry, as Paratext 9 does', () => {
+      expect(clean('see [b]').definition).toBe('see [b]');
+      expect(clean('see [b]', 2).definition).toBe('see (2)');
+    });
   });
 });

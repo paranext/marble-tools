@@ -9,7 +9,17 @@
  *   sometimes omits the space after a structure symbol.
  * - Each cross-reference target `{L:text<DICTIONARY:lemma>}` is rewritten to the exact lemma of the
  *   entry it means, because the Dictionary panel looks the target up by exact lemma.
- * - `[a]`, `[b]`, … (a meaning, by position) become `(1)`, `(2)`, … as in Paratext 9.
+ * - `[a]`, `[b]`, … (a meaning, by position) become `(1)`, `(2)`, …:
+ *   - A letter directly after a cross-reference names a meaning of the LINKED entry, so it is
+ *     numbered by that entry: the number is the position, among the linked entry's output senses in
+ *     the same language, of the letter's lexical meaning (`a` is the first) of the base form the
+ *     target names (the first base form when it names none). This deliberately differs from
+ *     Paratext 9, which numbers every letter by the entry being displayed and so leaves the letters
+ *     of a one-meaning entry as letters although they are valid for the entry they follow. A letter
+ *     whose link does not resolve to an output entry, or whose meaning does not exist or is not
+ *     output, is left as it is.
+ *   - Any other letter is numbered as in Paratext 9: only when the base form whose definition it
+ *     is has more than one meaning, and up to that number.
  *
  * Glosses are rendered by the Dictionary panel with the same markup parser, so their cross-reference
  * targets are rewritten in the same way. Their symbols and `[a]` letters are left alone: in glosses
@@ -35,9 +45,6 @@ export const KNOWN_DICTIONARY_IDS = ['SDBH', 'SDBG', 'BT-OT', 'REALIA'] as const
 
 /** A trailing meaning position such as `:000000` (SDBG), which is not part of the lemma */
 const TARGET_POSITION_REGEX = /:\d+$/;
-
-/** A meaning by its position: `[a]` is the first */
-const MEANING_LETTER_REGEX = /\[([a-z])\]/g;
 
 /** The structure symbols removed from definitions, in the order Paratext 9 removes them */
 export const STRUCTURE_SYMBOLS = ['= ', '► ', '◄ ', '≈ '] as const;
@@ -258,45 +265,125 @@ export function stripLeadingEquals(gloss: string): string {
 }
 
 export interface MeaningLetterCounts {
-  /** Letters replaced by a number */
+  /** Letters not after a link that were replaced by a number */
   replaced: number;
-  /** Letters left because their base form has only one meaning */
+  /** Letters not after a link that were left because their base form has only one meaning */
   singleMeaning: number;
-  /** Letters left because their base form has fewer meanings than the letter's position */
+  /** Letters not after a link that were left because their base form has fewer meanings than the letter's position */
   outOfRange: number;
+  /** Letters after a link that were numbered by the linked entry */
+  linkedReplaced: number;
+  /** Letters after a link that were left because the link does not resolve to an output entry */
+  linkedUnresolved: number;
+  /** Letters after a link that were left because the linked entry has no such output meaning */
+  linkedNoMeaning: number;
+  /** Numbered letters whose link names a meaning position (`:BBBMMM`) with the same meaning */
+  linkedPositionAgrees: number;
+  /** Numbered letters whose link names a meaning position with a different meaning */
+  linkedPositionDiffers: number;
+  /** Numbered letters whose link names no meaning position */
+  linkedPositionAbsent: number;
+}
+
+/** A cross-reference target as written in the text: dictionary, lemma and optional `:BBBMMM` */
+export interface LinkTarget {
+  dictionaryId: string;
+  lemma: string;
+  /** The trailing digits of `:BBBMMM`, without the colon; empty when the target has none */
+  position: string;
 }
 
 /**
- * Replaces `[a]`, `[b]`, … with `(1)`, `(2)`, … (the letter's position in the alphabet) exactly as
- * Paratext 9 does: only when the base form whose definition it is has more than one lexical meaning
- * (counting meanings that are not output), and the letter's position is within that count.
+ * Finds the number the Dictionary panel shows for a meaning of the entry a link targets, or
+ * `undefined` when the link does not resolve to an output entry (`'unresolved'`) or the entry has
+ * no such output meaning (`'noMeaning'`).
  *
- * In the MARBLE data the letter nearly always follows a cross-reference, or the name of another
- * entry, and names a meaning of that entry, the same one as the cross-reference's `:BBBMMM`
- * position. The number is that meaning's position in its base form, which is also its number in
- * the Dictionary panel when the entry has one base form and all its meanings are shown.
+ * @param meaningIndex The zero-based position of the meaning within its base form
+ */
+export type LinkedMeaningNumber = (
+  target: LinkTarget,
+  meaningIndex: number
+) => number | 'unresolved' | 'noMeaning';
+
+/** A cross-reference directly followed by a meaning letter, or a meaning letter on its own */
+const LETTER_AFTER_LINK_REGEX = /\{L:[^<}]*<([A-Za-z-]+):([^>}]*)>\}\[([a-z])\]|\[([a-z])\]/g;
+
+/**
+ * Replaces `[a]`, `[b]`, … with `(1)`, `(2)`, … (the letter's position in the alphabet unless the
+ * letter follows a link; see the module comment).
+ *
+ * A letter directly after a cross-reference is numbered by `linkedMeaningNumber`; it is left as it
+ * is when that returns no number, or when none is given.
+ *
+ * Any other letter is numbered exactly as Paratext 9 does: only when the base form whose
+ * definition it is has more than one lexical meaning (counting meanings that are not output), and
+ * the letter's position is within that count.
  *
  * @param baseFormMeaningCount The number of lexical meanings of the base form whose definition
  *   `text` is, including meanings that are not output
  */
 export function replaceMeaningLetters(
   text: string,
-  baseFormMeaningCount: number
+  baseFormMeaningCount: number,
+  linkedMeaningNumber?: LinkedMeaningNumber
 ): MeaningLetterCounts & { text: string } {
-  const counts: MeaningLetterCounts = { replaced: 0, singleMeaning: 0, outOfRange: 0 };
-  const result = text.replace(MEANING_LETTER_REGEX, (match, letter: string) => {
-    const position = letter.charCodeAt(0) - 'a'.charCodeAt(0) + 1;
-    if (baseFormMeaningCount <= 1) {
-      counts.singleMeaning++;
-      return match;
+  const counts: MeaningLetterCounts = {
+    replaced: 0,
+    singleMeaning: 0,
+    outOfRange: 0,
+    linkedReplaced: 0,
+    linkedUnresolved: 0,
+    linkedNoMeaning: 0,
+    linkedPositionAgrees: 0,
+    linkedPositionDiffers: 0,
+    linkedPositionAbsent: 0,
+  };
+  const alphabetPosition = (letter: string) => letter.charCodeAt(0) - 'a'.charCodeAt(0) + 1;
+  const result = text.replace(
+    LETTER_AFTER_LINK_REGEX,
+    (
+      match,
+      dictionaryId: string | undefined,
+      rawTarget: string | undefined,
+      linkLetter: string | undefined,
+      bareLetter: string | undefined
+    ) => {
+      if (linkLetter !== undefined && dictionaryId !== undefined && rawTarget !== undefined) {
+        const position = TARGET_POSITION_REGEX.exec(rawTarget)?.[0] ?? '';
+        const target: LinkTarget = {
+          dictionaryId,
+          lemma: rawTarget.slice(0, rawTarget.length - position.length),
+          position: position.slice(1),
+        };
+        const meaningIndex = alphabetPosition(linkLetter) - 1;
+        const number = linkedMeaningNumber?.(target, meaningIndex) ?? 'unresolved';
+        if (number === 'unresolved') {
+          counts.linkedUnresolved++;
+          return match;
+        }
+        if (number === 'noMeaning') {
+          counts.linkedNoMeaning++;
+          return match;
+        }
+        counts.linkedReplaced++;
+        if (target.position.length < 3) counts.linkedPositionAbsent++;
+        else if (Number(target.position.slice(-3)) === meaningIndex) counts.linkedPositionAgrees++;
+        else counts.linkedPositionDiffers++;
+        return `${match.slice(0, match.length - 3)}(${number})`;
+      }
+      const position = alphabetPosition(bareLetter ?? '');
+      if (baseFormMeaningCount <= 1) {
+        counts.singleMeaning++;
+        return match;
+      }
+      if (position > baseFormMeaningCount) {
+        counts.outOfRange++;
+        return match;
+      }
+      counts.replaced++;
+      return `(${position})`;
     }
-    if (position > baseFormMeaningCount) {
-      counts.outOfRange++;
-      return match;
-    }
-    counts.replaced++;
-    return `(${position})`;
-  });
+  );
   return { text: result, ...counts };
 }
 
@@ -325,6 +412,11 @@ export interface DefinitionCleanupInput {
    * not output
    */
   baseFormMeaningCountBySenseId: Map<string, number>;
+  /**
+   * For each source entry ID, the sense ID of every lexical meaning, by base form and then by
+   * position in the base form, including meanings that are not output
+   */
+  meaningSenseIdsByEntryId: Map<string, string[][]>;
 }
 
 /** A cross-reference target that is left unchanged, counted per language and containing entry */
@@ -413,7 +505,17 @@ function emptyCounts(): LanguageCleanupCounts {
     symbols: { '= ': 0, '► ': 0, '◄ ': 0, '≈ ': 0 },
     unspacedSymbols: { '=': 0, '►': 0, '◄': 0, '≈': 0 },
     glossLeadingEquals: 0,
-    meaningLetters: { replaced: 0, singleMeaning: 0, outOfRange: 0 },
+    meaningLetters: {
+      replaced: 0,
+      singleMeaning: 0,
+      outOfRange: 0,
+      linkedReplaced: 0,
+      linkedUnresolved: 0,
+      linkedNoMeaning: 0,
+      linkedPositionAgrees: 0,
+      linkedPositionDiffers: 0,
+      linkedPositionAbsent: 0,
+    },
   };
 }
 
@@ -428,7 +530,13 @@ function emptyCounts(): LanguageCleanupCounts {
  * is not output is reported rather than matched to a different entry.
  */
 export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCleanupReport {
-  const { dictionaryId, entriesByLanguage, sourceEntries, baseFormMeaningCountBySenseId } = input;
+  const {
+    dictionaryId,
+    entriesByLanguage,
+    sourceEntries,
+    baseFormMeaningCountBySenseId,
+    meaningSenseIdsByEntryId,
+  } = input;
   const lookup = createLemmaLookup(sourceEntries);
   const byLanguage: Record<string, LanguageCleanupCounts> = {};
   const unresolved = new Map<string, CrossReferenceProblem>();
@@ -518,6 +626,21 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
       const resolveInDefinition = makeResolver('definition', counts.crossReferences);
       const resolveInGloss = makeResolver('gloss', counts.glossCrossReferences);
 
+      // The number of a meaning of the entry a link names, as the Dictionary panel shows it
+      const linkedMeaningNumber: LinkedMeaningNumber = (target, meaningIndex) => {
+        if (target.dictionaryId.toUpperCase() !== dictionaryId.toUpperCase()) return 'unresolved';
+        const found = lookup(target.lemma);
+        if (found.kind !== 'found') return 'unresolved';
+        const linkedEntry = entries[found.entry.lemma];
+        if (!linkedEntry) return 'unresolved';
+        const baseForms = meaningSenseIdsByEntryId.get(found.entry.id) ?? [];
+        const baseFormIndex = target.position.length >= 3 ? Number(target.position.slice(0, 3)) : 0;
+        const senseId = baseForms[baseFormIndex]?.[meaningIndex];
+        const number =
+          senseId === undefined ? -1 : linkedEntry.senses.findIndex(s => s.id === senseId);
+        return number === -1 ? 'noMeaning' : number + 1;
+      };
+
       for (const sense of entry.senses) {
         for (const excerpt of findMalformedCrossReferences(sense.definition)) {
           counts.malformedCrossReferences++;
@@ -532,15 +655,16 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
         for (const symbol of UNSPACED_SYMBOLS)
           counts.unspacedSymbols[symbol] += stripped.unspaced[symbol];
 
+        // Letters are numbered before the targets are rewritten, while the link still reads as written
         const lettered = replaceMeaningLetters(
-          rewriteCrossReferenceTargets(stripped.text, resolveInDefinition),
-          baseFormMeaningCountBySenseId.get(sense.id) ?? 0
+          stripped.text,
+          baseFormMeaningCountBySenseId.get(sense.id) ?? 0,
+          linkedMeaningNumber
         );
-        counts.meaningLetters.replaced += lettered.replaced;
-        counts.meaningLetters.singleMeaning += lettered.singleMeaning;
-        counts.meaningLetters.outOfRange += lettered.outOfRange;
+        for (const key of Object.keys(counts.meaningLetters) as (keyof MeaningLetterCounts)[])
+          counts.meaningLetters[key] += lettered[key];
 
-        sense.definition = lettered.text;
+        sense.definition = rewriteCrossReferenceTargets(lettered.text, resolveInDefinition);
         if (sense.glosses)
           sense.glosses = sense.glosses.map(gloss => {
             const withoutEquals = stripLeadingEquals(gloss);

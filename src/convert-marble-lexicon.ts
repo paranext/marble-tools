@@ -112,7 +112,7 @@ interface DomainFileRecord extends DomainRecord {
 /** What the definition clean-up needs to know about the source entries and meanings */
 type DefinitionSources = Pick<
   DefinitionCleanupInput,
-  'sourceEntries' | 'baseFormMeaningCountBySenseId'
+  'sourceEntries' | 'baseFormMeaningCountBySenseId' | 'meaningSenseIdsByEntryId'
 >;
 
 interface TaxonomiesByLanguage {
@@ -561,6 +561,15 @@ function processFile(
 
       // Process each lexical meaning
       const lexMeanings = findElements(baseForm, 'LEXMeaning');
+      if (bfIdx === 0) definitionSources.meaningSenseIdsByEntryId.set(entryId, []);
+      // Every lexical meaning, whether or not it is output, so a letter in a definition can find
+      // the meaning it names by position
+      definitionSources.meaningSenseIdsByEntryId.get(entryId)?.push(
+        lexMeanings.map(meaning => {
+          const id = meaning.getAttribute('Id') || '';
+          return id ? buildSenseId(entryId, id) : '';
+        })
+      );
 
       for (let lmIdx = 0; lmIdx < lexMeanings.length; lmIdx++) {
         const lexMeaning = lexMeanings[lmIdx];
@@ -986,6 +995,12 @@ function printDefinitionCleanupReport(report: DefinitionCleanupReport): void {
       `    meaning letters: ${letters.replaced} numbered; left: base form with one meaning ` +
         `${letters.singleMeaning}, beyond the base form's meanings ${letters.outOfRange}`
     );
+    console.log(
+      `    meaning letters after a link: ${letters.linkedReplaced} numbered by the linked entry ` +
+        `(link's meaning position: same ${letters.linkedPositionAgrees}, different ` +
+        `${letters.linkedPositionDiffers}, none ${letters.linkedPositionAbsent}); left: link not ` +
+        `resolved ${letters.linkedUnresolved}, no such output meaning ${letters.linkedNoMeaning}`
+    );
   }
 
   const lists = [
@@ -1273,6 +1288,7 @@ function main(): void {
   const definitionSources: DefinitionSources = {
     sourceEntries: [],
     baseFormMeaningCountBySenseId: new Map(),
+    meaningSenseIdsByEntryId: new Map(),
   };
 
   // First, process the lexicon files to build the data structure

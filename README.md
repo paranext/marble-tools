@@ -38,6 +38,19 @@ Node is pinned to 22.22.1 with [Volta](https://volta.sh/). Without Volta, use a 
    npm run convert-sdbg
    ```
 
+## Changes to definitions
+
+The conversion changes sense definitions (`DefinitionShort`), in every language, as Paratext 9's dictionary does. Glosses are left as they are.
+
+- **Structure symbols:** every `= `, `► `, `◄ ` and `≈ ` (the symbol followed by a space) is removed wherever it occurs. `|` line breaks are kept.
+- **Cross-references:** in `{L:text<SDBH:lemma>}` (SDBG: `{L:text<SDBG:lemma:000000>}`), the target lemma is replaced with the exact `Lemma` of the entry it means, because the Dictionary looks targets up by exact lemma. Everything else in the markup, including SDBG's trailing meaning position, is kept. A target is compared with each entry's lemma exactly, then after Unicode NFD, then with a no-break space read as a space, then with the entry's `AlternateLemmas` in the same three ways, and finally with sheva + patah, segol or qamats read as the matching hataf vowel. The first comparison that matches decides; if it matches more than one entry, the target is ambiguous. Targets in another dictionary (such as `BT-OT`) are left alone.
+- **Meaning letters:** `[a]`, `[b]`, … become `(1)`, `(2)`, … when the base form whose definition it is has more than one lexical meaning and the letter is within that number, as in Paratext 9. In the MARBLE data such a letter usually follows a cross-reference and names a meaning of that entry.
+
+A target that is not changed is shown as plain text. The conversion lists these at the end, as warnings:
+
+- **Excluded by design:** the target is an entry that the conversion leaves out on purpose: an SDBH entry whose lexical meanings are all marked `N` or `X`, or whose version is below 3. Such an entry has no senses, so it is not in the database.
+- **Unresolved:** no entry matches, more than one does, or the entry has no senses in that language.
+
 ## License
 
 This project is licensed under the MIT License. All data needed to run this project is licensed under separate terms.

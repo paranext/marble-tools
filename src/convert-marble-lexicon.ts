@@ -33,6 +33,13 @@ import {
   transformDomainCode,
 } from './helpers';
 import {
+  cleanUpDefinitions,
+  DefinitionCleanupInput,
+  DefinitionCleanupReport,
+  LOOKUP_STEPS,
+  STRUCTURE_SYMBOLS,
+} from './definition-cleanup';
+import {
   buildDomainTree,
   buildLabelIndex,
   classifyDomainFile,
@@ -96,6 +103,12 @@ interface DomainFileRecord extends DomainRecord {
   displayCode: string;
   element: Element;
 }
+
+/** What the definition clean-up needs to know about the source entries and meanings */
+type DefinitionSources = Pick<
+  DefinitionCleanupInput,
+  'sourceEntries' | 'baseFormMeaningCountBySenseId'
+>;
 
 interface TaxonomiesByLanguage {
   [language: string]: {
@@ -266,7 +279,8 @@ let skippedLexReferences: SkippedLexReferences;
 function processLexiconFiles(
   inputDir: string,
   entriesByLanguage: EntriesByLanguage,
-  dictionaryType: 'SDBG' | 'SDBH'
+  dictionaryType: 'SDBG' | 'SDBH',
+  definitionSources: DefinitionSources
 ): void {
   // Dictionary to hold entries by language
   const files = fs.readdirSync(inputDir).filter(filename => {
@@ -282,7 +296,7 @@ function processLexiconFiles(
     fileCount++;
     const filePath = path.join(inputDir, filename);
     try {
-      processFile(filePath, entriesByLanguage, dictionaryType);
+      processFile(filePath, entriesByLanguage, dictionaryType, definitionSources);
       successCount++;
       if (fileCount % 10 === 0) {
         console.log(`Processed ${fileCount} files...`);
@@ -322,7 +336,8 @@ function processLexiconFiles(
 function processFile(
   filePath: string,
   entriesByLanguage: EntriesByLanguage,
-  dictionaryType: 'SDBG' | 'SDBH'
+  dictionaryType: 'SDBG' | 'SDBH',
+  definitionSources: DefinitionSources
 ): void {
   const xmlContent = fs.readFileSync(filePath, 'utf8');
   const doc = parseXmlStrict(xmlContent, filePath);
@@ -482,6 +497,13 @@ function processFile(
     }
   }
 
+  // From Reinier: In SDBH, please ignore all lexical meanings for which the IsBiblicalTerm
+  // attribute is set to X or N. They need to be in the database for specific reasons, but are not
+  // linked to the text.
+  function isNotLinked(lexMeaning: Element): boolean {
+    return ['X', 'N'].includes((lexMeaning.getAttribute('IsBiblicalTerm') || '').toUpperCase());
+  }
+
   // Process each lexicon entry
   const entries = doc.getElementsByTagName('Lexicon_Entry');
   for (let i = 0; i < entries.length; i++) {
@@ -497,9 +519,28 @@ function processFile(
       continue;
     }
 
+    // Every source entry can be the target of a cross-reference, including those left out below
+    const isVersionExcluded =
+      dictionaryType != DICTIONARY_TYPE.GREEK && entryVersion < ENTRY_VERSION.MIN_LEXICAL;
+    const allLexMeanings = findElements(entry, 'LEXMeaning');
+    const areAllMeaningsExcluded =
+      dictionaryType == DICTIONARY_TYPE.HEBREW &&
+      allLexMeanings.length > 0 &&
+      allLexMeanings.every(isNotLinked);
+    definitionSources.sourceEntries.push({
+      id: entryId,
+      lemma,
+      alternateLemmas: findElements(entry, 'AlternateLemma').map(getTextContent),
+      excludedByDesign: isVersionExcluded
+        ? `version ${entryVersion} is below ${ENTRY_VERSION.MIN_LEXICAL}`
+        : areAllMeaningsExcluded
+          ? 'all its lexical meanings are marked N or X'
+          : undefined,
+    });
+
     // From Reinier: exclude entries with a version number below 3, with no exception for meanings
     // marked M. SDBG is 100% done so you can ignore the version number.
-    if (dictionaryType != DICTIONARY_TYPE.GREEK && entryVersion < ENTRY_VERSION.MIN_LEXICAL) {
+    if (isVersionExcluded) {
       console.warn(
         `Skipping entry "${lemma}" (${entryId}) with version ${entryVersion} in file ${path.basename(filePath)}`
       );
@@ -536,13 +577,8 @@ function processFile(
       for (let lmIdx = 0; lmIdx < lexMeanings.length; lmIdx++) {
         const lexMeaning = lexMeanings[lmIdx];
         const lexMeaningId = lexMeaning.getAttribute('Id') || '';
-        const isBiblicalTerm = (lexMeaning.getAttribute('IsBiblicalTerm') || '').toUpperCase();
 
-        // From Reinier:In SDBH, please ignore all lexical meanings for which the IsBiblicalTerm
-        // attribute is set to X or N. They need to be in the database for specific reasons, but
-        // are not linked to the text.
-        if (dictionaryType == DICTIONARY_TYPE.HEBREW && ['X', 'N'].includes(isBiblicalTerm))
-          continue;
+        if (dictionaryType == DICTIONARY_TYPE.HEBREW && isNotLinked(lexMeaning)) continue;
 
         if (!lexMeaningId) {
           console.warn(
@@ -551,6 +587,12 @@ function processFile(
           continue;
         }
 
+        // `[a]`, `[b]`, … in the definition are numbered only if the base form has enough meanings
+        definitionSources.baseFormMeaningCountBySenseId.set(
+          buildSenseId(entryId, lexMeaningId),
+          lexMeanings.length
+        );
+
         const lexReferences = getLexReferences(lexMeaning);
         warnAboutConReferencesMissingFromLex(lexMeaning, lexReferences, entryId);
 
@@ -558,7 +600,7 @@ function processFile(
         // or X are kept as senses, but like SDBH's they are not linked to the text, so they get no
         // occurrences.
         let occurrences: Occurrence[] = [];
-        if (['X', 'N'].includes(isBiblicalTerm)) {
+        if (isNotLinked(lexMeaning)) {
           skippedLexReferences.notLinked += lexReferences.length;
         } else {
           const parsed = occurrencesFromLexReferences(lexReferences);
@@ -905,6 +947,50 @@ function checkSenseDomainsOrExit(
 }
 
 /**
+ * Print what the definition clean-up did per language, then the cross-reference targets it left
+ * unchanged: those whose entry the conversion rules leave out, and those it could not resolve. The
+ * Dictionary shows such a cross-reference as plain text, so these are warnings, not failures.
+ */
+function printDefinitionCleanupReport(report: DefinitionCleanupReport): void {
+  for (const [language, counts] of Object.entries(report.byLanguage)) {
+    const { crossReferences: refs, symbols, meaningLetters: letters } = counts;
+    console.log(`  ${language}:`);
+    console.log(
+      `    cross-reference targets resolved: ` +
+        LOOKUP_STEPS.map(step => `${step} ${refs[step]}`).join(', ')
+    );
+    console.log(
+      `    cross-reference targets left unchanged: other dictionary ${refs.otherDictionary}, ` +
+        `excluded by design ${refs.excludedByDesign}, ambiguous ${refs.ambiguous}, ` +
+        `not output in this language ${refs.notEmitted}, not found ${refs.unresolved}`
+    );
+    console.log(
+      `    structure symbols removed: ` +
+        STRUCTURE_SYMBOLS.map(symbol => `"${symbol}" ${symbols[symbol]}`).join(', ')
+    );
+    console.log(
+      `    meaning letters: ${letters.replaced} numbered; left: base form with one meaning ` +
+        `${letters.singleMeaning}, beyond the base form's meanings ${letters.outOfRange}`
+    );
+  }
+
+  const lists = [
+    ['Cross-reference targets excluded by design', report.excludedByDesign],
+    ['Unresolved cross-reference targets', report.unresolved],
+  ] as const;
+  for (const [title, problems] of lists) {
+    if (problems.length === 0) continue;
+    const total = problems.reduce((sum, problem) => sum + problem.count, 0);
+    console.warn(`${title} (${total} in ${problems.length} places; target, language, entry Id):`);
+    for (const problem of problems)
+      console.warn(
+        `  ${problem.dictionaryId}:${problem.target}  ${problem.language}  ` +
+          `${problem.entryId.replace(ENTRY_PREFIX, '')}  x${problem.count}  (${problem.reason})`
+      );
+  }
+}
+
+/**
  * Write entries to an XML output file.
  */
 function writeOutputFile(
@@ -1174,10 +1260,15 @@ function main(): void {
   // Create taxonomiesByLanguage data structure
   const taxonomiesByLanguage: TaxonomiesByLanguage = {};
 
+  const definitionSources: DefinitionSources = {
+    sourceEntries: [],
+    baseFormMeaningCountBySenseId: new Map(),
+  };
+
   // First, process the lexicon files to build the data structure
   console.log(`\nStep 1: Processing lexicon files...`);
   const processLexiconStart = Date.now();
-  processLexiconFiles(options.input, entriesByLanguage, dictionaryType);
+  processLexiconFiles(options.input, entriesByLanguage, dictionaryType, definitionSources);
   console.log(
     `Lexicon processing completed in ${((Date.now() - processLexiconStart) / 1000).toFixed(2)} seconds.`
   );
@@ -1225,12 +1316,22 @@ function main(): void {
     }
   }
 
+  // Cross-references are rewritten only to entries that will be output, so the clean-up runs after
+  // the empty senses and entries are removed
+  console.log(`\nStep ${options.domains ? '4' : '3'}: Cleaning up definitions...`);
+  const cleanupReport = cleanUpDefinitions({
+    dictionaryId: dictionaryType,
+    entriesByLanguage,
+    ...definitionSources,
+  });
+  printDefinitionCleanupReport(cleanupReport);
+
   // Fail before writing anything if sense domains disagree with the taxonomy labels
   console.log(`\nChecking sense domains against the English taxonomy labels...`);
   checkSenseDomainsOrExit(entriesByLanguage, taxonomiesByLanguage, options.domains !== undefined);
 
   // Finally, write output files
-  console.log(`\nStep ${options.domains ? '4' : '3'}: Writing output files...`);
+  console.log(`\nStep ${options.domains ? '5' : '4'}: Writing output files...`);
   const writeStart = Date.now();
 
   // Create output directory if it doesn't exist

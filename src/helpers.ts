@@ -287,96 +287,27 @@ export const bookCodeToNumber: Record<string, number> = {
 };
 
 /**
- * Condenses sense IDs that follow a hierarchical pattern.
- * Handles two types of patterns:
- * 1. Equal-length segments where parent IDs end with zeros and child IDs extend by replacing zeros with non-zero digits
- * 2. Different-length segments where later segments should be applied from the right-hand side
- *    ONLY if later segments are the same length or shorter than the previous length
- * Returns the condensed ID or the original ID if it doesn't match a known pattern.
+ * Builds a sense ID from the owning `Lexicon_Entry` ID and the ID of the meaning the sense comes
+ * from (the `LEXMeaning` ID for a lexical sense, the `ContextualMeaning` ID for a contextual one).
+ *
+ * The result is `sense-` followed by 15 digits: the entry number (the first 6 digits of the entry
+ * ID) and the last 9 digits of the meaning ID. The source data writes meaning IDs either as 15
+ * digits (entry number + 9) or as the bare 9 digits, and both forms give the same sense ID.
+ * A lexical meaning's 9 digits end in `000`.
+ *
+ * Throws if either ID is not all digits or is too short, so a malformed ID stops the conversion
+ * instead of producing a bad sense ID.
  */
-export function condenseSenseId(id: string): string {
-  if (!id || !id.startsWith(SENSE_PREFIX)) return id;
-
-  // Split the ID by hyphens
-  const parts = id.split('-');
-
-  // If we have less than 2 parts (e.g., "sense-12345"), just return the original ID
-  if (parts.length < 2) return id;
-
-  // Collect all numeric parts after "sense-"
-  const numericParts = parts.slice(1);
-
-  // Check if all parts are numeric
-  if (!numericParts.every(part => /^\d+$/.test(part))) return id;
-
-  // Check for pattern 1: same-length segments with hierarchical zeros
-  if (numericParts.every(part => part.length === numericParts[0].length)) {
-    let isHierarchical = true;
-
-    // Check the hierarchical digit pattern
-    for (let i = 1; i < numericParts.length; i++) {
-      const prevPart = numericParts[i - 1];
-      const currPart = numericParts[i];
-
-      // Find the first position where the parts differ
-      let diffPos = 0;
-      while (diffPos < prevPart.length && prevPart[diffPos] === currPart[diffPos]) {
-        diffPos++;
-      }
-
-      // Now check if all remaining digits in prevPart are zeros
-      // and currPart has at least one non-zero digit in those positions
-      let allZerosInPrev = true;
-      let hasNonZeroInCurr = false;
-
-      for (let j = diffPos; j < prevPart.length; j++) {
-        if (prevPart[j] !== '0') {
-          allZerosInPrev = false;
-          break;
-        }
-        if (currPart[j] !== '0') {
-          hasNonZeroInCurr = true;
-        }
-      }
-
-      if (!allZerosInPrev || !hasNonZeroInCurr) {
-        isHierarchical = false;
-        break;
-      }
-    }
-
-    // If hierarchical, return only "sense-" plus the last part
-    if (isHierarchical && numericParts.length > 0) {
-      return `${SENSE_PREFIX}${numericParts[numericParts.length - 1]}`;
-    }
+export function buildSenseId(entryId: string, meaningId: string): string {
+  if (!/^\d{6,}$/.test(entryId)) {
+    throw new Error(`Cannot build a sense ID: entry ID "${entryId}" is not at least 6 digits`);
   }
-  // Check for pattern 2: different-length segments applied from right to left
-  else if (numericParts.length >= 2) {
-    // Start with the base (first) numeric part
-    let result = numericParts[0];
-
-    // Check if any later segment is longer than its previous segment
-    for (let i = 1; i < numericParts.length; i++) {
-      if (numericParts[i].length > numericParts[i - 1].length) {
-        // If any later segment is longer than its previous segment, return the original ID
-        return id;
-      }
-    }
-
-    // Process each subsequent part by overlaying it from the right
-    for (let i = 1; i < numericParts.length; i++) {
-      const currentPart = numericParts[i];
-
-      // Replace the rightmost digits of result with the current part
-      const overlayPosition = result.length - currentPart.length;
-      result = result.substring(0, overlayPosition) + currentPart;
-    }
-
-    return `${SENSE_PREFIX}${result}`;
+  if (!/^(\d{9}|\d{15})$/.test(meaningId)) {
+    throw new Error(
+      `Cannot build a sense ID: meaning ID "${meaningId}" is not 9 or 15 digits (entry ID "${entryId}")`
+    );
   }
-
-  // If no pattern matches, return the original ID
-  return id;
+  return `${SENSE_PREFIX}${entryId.substring(0, 6)}${meaningId.slice(-9)}`;
 }
 
 /**

@@ -19,7 +19,7 @@ import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import { Command } from 'commander';
 import {
   bookMap,
-  condenseSenseId,
+  buildSenseId,
   CORPUS_ID,
   DICTIONARY_TYPE,
   ENTRY_PREFIX,
@@ -111,79 +111,10 @@ function getTaxonomyId(
 }
 
 /**
- * Remove duplicate senses within the same entry.
+ * Verify that entry IDs and sense IDs are unique within each language. Throws on a duplicate so
+ * the conversion fails instead of dropping or merging a meaning.
  */
-function removeDuplicateSensesWithinEntry(entriesByLanguage: EntriesByLanguage): void {
-  for (const language in entriesByLanguage) {
-    for (const lemma in entriesByLanguage[language]) {
-      const entry = entriesByLanguage[language][lemma];
-
-      const uniqueSenses: Record<string, Sense> = {};
-      const duplicateSenses: Sense[] = [];
-
-      for (const sense of entry.senses) {
-        if (uniqueSenses[sense.id]) {
-          // Compare the existing sense with the duplicate
-          const existingSense = uniqueSenses[sense.id];
-
-          const canCombine =
-            (!existingSense.definition || !sense.definition) &&
-            (!existingSense.glosses.length || !sense.glosses.length);
-
-          if (canCombine) {
-            // Combine data from both senses
-            if (!existingSense.definition && sense.definition) {
-              existingSense.definition = sense.definition;
-            }
-            if (!existingSense.glosses.length && sense.glosses.length) {
-              existingSense.glosses = sense.glosses;
-            }
-
-            console.warn(
-              `Senses combined in language '${language}', lemma '${lemma}', sense ID '${sense.id}'.`
-            );
-          } else {
-            // Mark the duplicate sense for removal
-            duplicateSenses.push(sense);
-          }
-        } else {
-          uniqueSenses[sense.id] = sense;
-        }
-      }
-
-      // Replace the entry's senses with the unique ones
-      entry.senses = Object.values(uniqueSenses);
-
-      // Log warnings for duplicate senses
-      for (const duplicate of duplicateSenses) {
-        console.warn(
-          `Duplicate sense removed in language '${language}', lemma '${lemma}', sense ID '${duplicate.id}', glosses: [${duplicate.glosses.join(', ')}].`
-        );
-      }
-    }
-  }
-}
-
-/**
- * Verify and remove duplicate senses across entries in the same language.
- */
-function verifyAndRemoveDuplicateSenses(entriesByLanguage: EntriesByLanguage): void {
-  // Step 1: Condense all sense IDs
-  for (const language in entriesByLanguage) {
-    for (const lemma in entriesByLanguage[language]) {
-      const entry = entriesByLanguage[language][lemma];
-
-      // Condense each sense ID
-      for (const sense of entry.senses) {
-        sense.id = condenseSenseId(sense.id);
-      }
-    }
-  }
-
-  // Step 2: Remove duplicate senses within the same entry
-  removeDuplicateSensesWithinEntry(entriesByLanguage);
-
-  // Step 3: Verify unique IDs across all entries and senses within each language
+function verifyUniqueEntryAndSenseIds(entriesByLanguage: EntriesByLanguage): void {
   for (const language in entriesByLanguage) {
     const entryIds = new Set<string>();
     const senseIds = new Set<string>();
@@ -340,14 +271,16 @@ function processLexiconFiles(
         console.log(`Processed ${fileCount} files...`);
       }
     } catch (e) {
+      // A file that cannot be converted (for example one with a malformed ID) fails the whole
+      // conversion rather than leaving its entries out of the output.
       console.error(`Error processing file ${filePath}: ${e}`);
+      throw e;
     }
   }
 
   console.log(`Successfully processed ${successCount} out of ${fileCount} files.`);
 
-  // Remove duplicate senses within entries and verify unique IDs
-  verifyAndRemoveDuplicateSenses(entriesByLanguage);
+  verifyUniqueEntryAndSenseIds(entriesByLanguage);
 }
 
 /**
@@ -655,7 +588,7 @@ function processFile(
 
           // Add the LexSense to the entry's senses
           entriesByLanguage[languageCode][lemma].senses.push({
-            id: `${SENSE_PREFIX}${entryId}-${baseFormId}-${lexMeaningId}`,
+            id: buildSenseId(entryId, lexMeaningId),
             baseFormIndex: bfIdx,
             lexIndex: lmIdx,
             conIndex: undefined, // No ConMeaning for LexSense
@@ -737,7 +670,7 @@ function processFile(
 
               // Add the ConSense to the entry's senses
               entriesByLanguage[languageCode][lemma].senses.push({
-                id: `${SENSE_PREFIX}${entryId}-${baseFormId}-${lexMeaningId}-${conMeaningId}`,
+                id: buildSenseId(entryId, conMeaningId),
                 baseFormIndex: bfIdx,
                 lexIndex: lmIdx,
                 conIndex: cmIdx,

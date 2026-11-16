@@ -4,8 +4,8 @@
   "description": "A project to transform current lexicon files from the old format to the new format.",
   "main": "src/transform.ts",
   "scripts": {
-    "convert-sdbg": "ts-node src/convert-marble-lexicon.ts --dictionary-type SDBG --input ../marble-lexicon/SDBG --domains ../marble-lexicon/SDBG --marble-links ../marble-indexes/Full --output output-sdbg --version $(cd ../marble-lexicon && git log -1 --format=%cd --date=iso-strict)",
-    "convert-sdbh": "ts-node src/convert-marble-lexicon.ts --dictionary-type SDBH --input ../marble-lexicon/SDBH --domains ../marble-lexicon/SDBH --marble-links ../marble-indexes/Full --output output-sdbh --version $(cd ../marble-lexicon && git log -1 --format=%cd --date=iso-strict)",
+    "convert-sdbg": "ts-node src/convert-marble-lexicon.ts --dictionary-type SDBG --input ../marble-lexicon/SDBG --domains ../marble-lexicon/SDBG --output output-sdbg --version $(cd ../marble-lexicon && git log -1 --format=%cd --date=iso-strict)",
+    "convert-sdbh": "ts-node src/convert-marble-lexicon.ts --dictionary-type SDBH --input ../marble-lexicon/SDBH --domains ../marble-lexicon/SDBH --output output-sdbh --version $(cd ../marble-lexicon && git log -1 --format=%cd --date=iso-strict)",
     "import-to-sqlite": "ts-node src/import-lexicon-to-sqlite.ts --input output-sdbg output-sdbh --output lexicon.db",
     "import-sdbg-to-sqlite": "ts-node src/import-lexicon-to-sqlite.ts --input output-sdbg --output lexicon-sdbg.db",
     "import-sdbh-to-sqlite": "ts-node src/import-lexicon-to-sqlite.ts --input output-sdbh --output lexicon-sdbh.db",

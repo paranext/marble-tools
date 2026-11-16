@@ -23,10 +23,9 @@ export const CORPUS_ID = {
   HEBREW: 'UBSBHS4',
 };
 
-// Define the minimum versions for using lexical and contextual meanings
+// Define the minimum entry version for using lexical meanings
 export const ENTRY_VERSION = {
   MIN_LEXICAL: 3,
-  MIN_CONTEXTUAL: 5,
 };
 
 export const SENSE_PREFIX = 'sense-';
@@ -289,8 +288,8 @@ export const bookCodeToNumber: Record<string, number> = {
 };
 
 /**
- * Builds a sense ID from the owning `Lexicon_Entry` ID and the ID of the meaning the sense comes
- * from (the `LEXMeaning` ID for a lexical sense, the `ContextualMeaning` ID for a contextual one).
+ * Builds a sense ID from the owning `Lexicon_Entry` ID and the ID of the `LEXMeaning` the sense
+ * comes from.
  *
  * The result is `sense-` followed by 15 digits: the entry number (the first 6 digits of the entry
  * ID) and the last 9 digits of the meaning ID. The source data writes meaning IDs either as 15
@@ -428,6 +427,71 @@ export function marbleLinkIdToU23003(id: string): string {
   }
 
   return `${book} ${chapter}:${verse}!${word}`;
+}
+
+/**
+ * The occurrences a lexical meaning's `LEXReference`s yield, and the references that yield none,
+ * grouped by why they were skipped.
+ */
+export interface LexReferenceOccurrences {
+  /** U23003 occurrences, each once, in source order */
+  occurrences: string[];
+  /** References whose first 14 characters are not 14 digits */
+  invalid: string[];
+  /** References with an odd word ID: readings from the critical apparatus, not in the base text */
+  odd: string[];
+  /** References to word 0, which point at a verse (such as a book title) rather than a word */
+  wordZero: string[];
+  /** References whose book number has no book code */
+  unknownBook: string[];
+}
+
+/**
+ * Converts the text of a lexical meaning's `LEXReference` elements into U23003 occurrences.
+ *
+ * Each reference is a 14-digit ID (BBBCCCVVVPPWWW, the same format as a MARBLELink ID), which may
+ * be followed by a note such as `{N:001}`; only the first 14 characters are used. References that
+ * cannot be shown as a word in the base text are skipped and returned by class, with the first 14
+ * characters of each (or the whole trimmed text for an invalid one).
+ */
+export function occurrencesFromLexReferences(references: string[]): LexReferenceOccurrences {
+  const result: LexReferenceOccurrences = {
+    occurrences: [],
+    invalid: [],
+    odd: [],
+    wordZero: [],
+    unknownBook: [],
+  };
+  const seen = new Set<string>();
+
+  for (const reference of references) {
+    const trimmed = reference.trim();
+    const id = trimmed.substring(0, 14);
+    if (!/^\d{14}$/.test(id)) {
+      result.invalid.push(trimmed);
+      continue;
+    }
+    // From Reinier: odd reference IDs refer to cases in the apparatus, which means that these words
+    // are not in the text.
+    if (!['0', '2', '4', '6', '8'].includes(id[13])) {
+      result.odd.push(id);
+      continue;
+    }
+    if (!bookMap[id.substring(0, 3)]) {
+      result.unknownBook.push(id);
+      continue;
+    }
+    if (id.substring(11) === '000') {
+      result.wordZero.push(id);
+      continue;
+    }
+    const occurrence = marbleLinkIdToU23003(id);
+    if (seen.has(occurrence)) continue;
+    seen.add(occurrence);
+    result.occurrences.push(occurrence);
+  }
+
+  return result;
 }
 
 /**

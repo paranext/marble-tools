@@ -2,7 +2,9 @@ import { buildSenseId, SENSE_PREFIX } from '../helpers';
 
 describe('buildSenseId', () => {
   test('uses the entry number plus the last 9 digits of a 15-digit lexical meaning ID', () => {
-    expect(buildSenseId('000583000000000', '000583001002000')).toBe(`${SENSE_PREFIX}000583001002000`);
+    expect(buildSenseId('000583000000000', '000583001002000')).toBe(
+      `${SENSE_PREFIX}000583001002000`
+    );
   });
 
   test('uses the entry number plus a 9-digit lexical meaning ID as is', () => {
@@ -10,8 +12,8 @@ describe('buildSenseId', () => {
   });
 
   test('builds the same ID from both lengths of one meaning ID', () => {
-    expect(buildSenseId('000583000000000', '000583001002003')).toBe(
-      buildSenseId('000583000000000', '001002003')
+    expect(buildSenseId('000583000000000', '000583001002000')).toBe(
+      buildSenseId('000583000000000', '001002000')
     );
   });
 
@@ -19,13 +21,8 @@ describe('buildSenseId', () => {
     expect(buildSenseId('000583000000000', '001002000')).toMatch(/000$/);
   });
 
-  test('builds contextual meaning IDs of both lengths', () => {
-    expect(buildSenseId('000583000000000', '000583001002003')).toBe(`${SENSE_PREFIX}000583001002003`);
-    expect(buildSenseId('000583000000000', '001002003')).toBe(`${SENSE_PREFIX}000583001002003`);
-  });
-
   test('accepts a 6-digit entry ID', () => {
-    expect(buildSenseId('000583', '001002003')).toBe(`${SENSE_PREFIX}000583001002003`);
+    expect(buildSenseId('000583', '001002000')).toBe(`${SENSE_PREFIX}000583001002000`);
   });
 
   test.each([

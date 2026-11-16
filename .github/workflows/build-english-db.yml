@@ -27,7 +27,6 @@ jobs:
       - name: Clone private repositories
         run: |
           git clone https://${{ secrets.MARBLE_REPO_TOKEN }}@github.com/ubsicap/marble-lexicon.git ../marble-lexicon
-          git clone https://${{ secrets.MARBLE_REPO_TOKEN }}@github.com/ubsicap/marble-indexes.git ../marble-indexes
 
       - name: Convert SDBG lexicon
         run: npm run convert-sdbg

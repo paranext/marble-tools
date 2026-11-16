@@ -25,7 +25,9 @@ import {
   ENTRY_PREFIX,
   ENTRY_VERSION,
   extractDefinitionAndGlosses,
+  findConReferencesMissingFromLex,
   marbleLinkIdToU23003,
+  parseXmlStrict,
   SENSE_PREFIX,
   transformDomainCode,
 } from './helpers';
@@ -245,6 +247,9 @@ function removeEmptyEntriesAndSenses(entriesByLanguage: EntriesByLanguage): {
   };
 }
 
+// Number of contextual meaning references that are absent from their lexical meaning's references
+let conReferencesMissingFromLexCount = 0;
+
 /**
  * Process all XML files in the input directory and generate output files by language.
  */
@@ -260,6 +265,7 @@ function processLexiconFiles(
 
   let fileCount = 0;
   let successCount = 0;
+  conReferencesMissingFromLexCount = 0;
 
   for (const filename of files) {
     fileCount++;
@@ -279,6 +285,9 @@ function processLexiconFiles(
   }
 
   console.log(`Successfully processed ${successCount} out of ${fileCount} files.`);
+  console.log(
+    `CONReferences missing from their lexical meaning's LEXReferences: ${conReferencesMissingFromLexCount}`
+  );
 
   verifyUniqueEntryAndSenseIds(entriesByLanguage);
 }
@@ -292,8 +301,7 @@ function processFile(
   dictionaryType: 'SDBG' | 'SDBH'
 ): void {
   const xmlContent = fs.readFileSync(filePath, 'utf8');
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(xmlContent, 'text/xml');
+  const doc = parseXmlStrict(xmlContent, filePath);
 
   // Helper function to get text content safely
   function getTextContent(element: Element | null): string {
@@ -415,6 +423,29 @@ function processFile(
 
     const combined = Array.from(uniqueDomains.values());
     return combined.length > 0 ? combined : undefined;
+  }
+
+  // Warn about each CONReference of a lexical meaning's contextual meanings that is not among the
+  // lexical meaning's own LEXReferences. The LEXReferences element is a direct child of the
+  // LEXMeaning; the CONMeanings holding the contextual meanings are searched separately.
+  function warnAboutConReferencesMissingFromLex(lexMeaning: Element, entryId: string): void {
+    const lexReferences: string[] = [];
+    for (let i = 0; i < lexMeaning.childNodes.length; i++) {
+      const child = lexMeaning.childNodes[i];
+      if (child.nodeType !== 1 || child.nodeName !== 'LEXReferences') continue;
+      for (const lexReference of findElements(child as Element, 'LEXReference'))
+        lexReferences.push(getTextContent(lexReference));
+    }
+
+    for (const conMeaning of findElements(lexMeaning, 'ContextualMeaning')) {
+      const conReferences = findElements(conMeaning, 'CONReference').map(getTextContent);
+      for (const missing of findConReferencesMissingFromLex(conReferences, lexReferences)) {
+        conReferencesMissingFromLexCount++;
+        console.warn(
+          `CONReference ${missing} of entry ${entryId}, lexical meaning ${lexMeaning.getAttribute('Id')}, contextual meaning ${conMeaning.getAttribute('Id')} is not in the lexical meaning's LEXReferences (file ${path.basename(filePath)})`
+        );
+      }
+    }
   }
 
   // Helper function to extract CONReferences from a ContextualMeaning element
@@ -542,6 +573,8 @@ function processFile(
           );
           continue;
         }
+
+        warnAboutConReferencesMissingFromLex(lexMeaning, entryId);
 
         // Get the taxonomy IDs for later
         const lexicalTaxonomyId = getTaxonomyId(dictionaryType, 'Lexical');
@@ -757,6 +790,7 @@ function processMarbleLinksFiles(
       processedFileCount++;
     } catch (e) {
       console.error(`Error processing MARBLELinks file ${filePath}: ${e}`);
+      throw e;
     }
 
     console.log(
@@ -799,8 +833,7 @@ function processMarbleLinksFile(
   processedLinks: number;
 } {
   const xmlContent = fs.readFileSync(filePath, 'utf8');
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(xmlContent, 'text/xml');
+  const doc = parseXmlStrict(xmlContent, filePath);
 
   let totalLinks = 0;
   let badLinks = 0;
@@ -994,6 +1027,7 @@ function processDomainFiles(
       processDomainFile(filePath, senseType, dictionaryType, taxonomiesByLanguage);
     } catch (e) {
       console.error(`Error processing domain file ${filePath}: ${e}`);
+      throw e;
     }
   }
 
@@ -1012,8 +1046,7 @@ function processDomainFile(
   taxonomiesByLanguage: TaxonomiesByLanguage
 ): void {
   const xmlContent = fs.readFileSync(filePath, 'utf8');
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(xmlContent, 'text/xml');
+  const doc = parseXmlStrict(xmlContent, filePath);
 
   // Get all semantic domains
   const fileName = path.basename(filePath);

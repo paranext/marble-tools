@@ -1,6 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import { DOMParser } from '@xmldom/xmldom';
 // TODO: Replace sqlite3 and sqlite with the built-in node:sqlite module, then remove sqlite3,
 // sqlite, @types/sqlite3 and scripts/ensure-sqlite3.js. The native sqlite3 addon is what brings in
 // the glibc rebuild and the prebuild-install/node-gyp dependency chain. On Node 22, node:sqlite
@@ -8,7 +7,7 @@ import { DOMParser } from '@xmldom/xmldom';
 import sqlite3 from 'sqlite3';
 import { open, Database } from 'sqlite';
 import { Command } from 'commander';
-import { parseU23003Reference } from './helpers';
+import { parseU23003Reference, parseXmlStrict } from './helpers';
 
 // Cache objects to reduce database lookups
 interface ForeignKeyCache {
@@ -71,7 +70,7 @@ function findChildElementByName(parentElement: Element, name: string): Element |
 }
 
 async function initializeDatabase(dbPath: string, schemaPath: string): Promise<Database> {
-  // Delete existing db file if it exists
+  // Remove a leftover file from an earlier failed run so the import starts from an empty database
   if (fs.existsSync(dbPath)) {
     fs.unlinkSync(dbPath);
   }
@@ -250,30 +249,30 @@ async function insertAndGetKey(
     : getKey(db, tableName, keyColumn, columnsAndValues, context);
 }
 
+// Insert a record that must be new. The tables use INSERT OR IGNORE, so a duplicate would
+// otherwise be dropped without any sign that source data was lost.
+async function insertNewAndGetKey(
+  db: Database,
+  tableName: string,
+  columnsAndValues: Record<string, unknown>,
+  description: string
+): Promise<number> {
+  const result = await insert(db, tableName, columnsAndValues);
+  if (!result.changes) throw new Error(`Duplicate ${description}`);
+  return result.lastID;
+}
+
 async function processLexicalReference(filePath: string, db: Database): Promise<void> {
   console.log(`Processing ${filePath}...`);
 
   // Use utf-8 encoding explicitly when reading XML files
   const xml = fs.readFileSync(filePath, 'utf-8');
 
-  // Configure XML parser to properly handle various scripts and encodings
-  const parserOptions = {
-    locator: {},
-    errorHandler: {
-      warning: (msg: string) => console.warn(`XML Warning: ${msg}`),
-      error: (msg: string) => console.error(`XML Error: ${msg}`),
-      fatalError: (msg: string) => {
-        throw new Error(`Fatal XML Error: ${msg}`);
-      },
-    },
-  };
-
-  const doc = new DOMParser(parserOptions).parseFromString(xml, 'text/xml');
+  const doc = parseXmlStrict(xml, filePath);
 
   const lexRef = doc.documentElement;
   if (!lexRef || lexRef.nodeName !== 'LexicalReferenceText') {
-    console.warn(`Skipping ${filePath}: not a valid LexicalReferenceText file`);
-    return;
+    throw new Error(`${filePath} is not a valid LexicalReferenceText file`);
   }
 
   const refTextName = lexRef.getAttribute('Id');
@@ -281,14 +280,12 @@ async function processLexicalReference(filePath: string, db: Database): Promise<
   const dataVersion = lexRef.getAttribute('DataVersion'); // Updated from Version to DataVersion
   const schemaVersion = lexRef.getAttribute('SchemaVersion'); // New attribute
   if (schemaVersion !== '1.0') {
-    console.warn(`Skipping ${filePath}: unsupported schema version ${schemaVersion}`);
-    return;
+    throw new Error(`${filePath} has unsupported schema version ${schemaVersion}`);
   }
   const language = lexRef.getAttribute('Language');
 
   if (!refTextName || !dataVersion || !language) {
-    console.warn(`Skipping ${filePath}: missing required attributes`);
-    return;
+    throw new Error(`${filePath} is missing required attributes (Id, DataVersion or Language)`);
   }
 
   // Start a transaction
@@ -328,9 +325,15 @@ async function processLexicalReference(filePath: string, db: Database): Promise<
 
       for (let i = 0; i < entryElements.length; i += batchSize) {
         const batch = Array.from(entryElements).slice(i, i + batchSize);
-        await Promise.all(
+        // Wait for every entry to settle before failing, so no entry is still writing when the
+        // transaction is rolled back.
+        const results = await Promise.allSettled(
           batch.map(entry => processEntry(entry, lexRefKey, languageKey, db, filePath))
         );
+        const failure = results.find(
+          (result): result is PromiseRejectedResult => result.status === 'rejected'
+        );
+        if (failure) throw failure.reason;
 
         // Update progress on same line
         const progress = (((i + batch.length) / entryElements.length) * 100).toFixed(1);
@@ -361,6 +364,11 @@ async function processLexicalReference(filePath: string, db: Database): Promise<
         console.error('Error getting database state:', err);
       }
     }
+
+    // A file that fails to import fails the whole import
+    throw new Error(
+      `Failed to import ${filePath}: ${error instanceof Error ? error.message : String(error)}`
+    );
   }
 }
 
@@ -373,8 +381,7 @@ async function processTaxonomy(
   const taxonomyTitle = taxonomyElement.getAttribute('Title');
 
   if (!taxonomyId || !taxonomyTitle) {
-    console.warn('Skipping taxonomy: missing required attributes (Id or Title)');
-    return;
+    throw new Error('Taxonomy is missing required attributes (Id or Title)');
   }
 
   try {
@@ -391,9 +398,10 @@ async function processTaxonomy(
     const domains: Array<{ element: Element; parentCode: string | null }> = [];
     const collectDomains = (element: Element, parentCode: string | null) => {
       const code = element.getAttribute('Code');
-      if (code) {
-        domains.push({ element, parentCode });
+      if (!code) {
+        throw new Error(`Taxonomy ${taxonomyId} has a domain without a Code attribute`);
       }
+      domains.push({ element, parentCode });
       const childDomainsElement = element.getElementsByTagName('SubDomains')[0];
       if (childDomainsElement) {
         const children = childDomainsElement.getElementsByTagName('SubDomain');
@@ -465,8 +473,7 @@ async function processSubDomain(
   const domainName = subDomainElement.getAttribute('Name');
 
   if (!domainCode) {
-    console.warn('Skipping subdomain: missing required Code attribute');
-    return;
+    throw new Error('Subdomain is missing the required Code attribute');
   }
 
   try {
@@ -535,17 +542,17 @@ async function processEntry(
   const lemma = entryElement.getAttribute('Lemma');
 
   if (!entrySourceId || !lemma) {
-    console.warn('Skipping entry: missing required attributes');
-    return;
+    throw new Error(
+      `Entry in ${filePath} is missing required attributes (Id or Lemma): Id="${entrySourceId}", Lemma="${lemma}"`
+    );
   }
 
   try {
-    const entryKey = await insertAndGetKey(
+    const entryKey = await insertNewAndGetKey(
       db,
       'Entries',
-      'EntryKey',
       { Id: entrySourceId, Lemma: lemma, LexicalReferenceTextKey: refTextKey },
-      'Get entry key'
+      `entry Id or lemma (Id ${entrySourceId}, lemma ${lemma})`
     );
 
     // Process entry-level StrongsCodes if present
@@ -596,11 +603,9 @@ async function processEntry(
       }
     }
   } catch (error: unknown) {
-    console.error(
-      `Error processing entry ${entrySourceId} (lemma: ${lemma}) in ${filePath}:`,
-      error instanceof Error ? error.message : error
+    throw new Error(
+      `Entry ${entrySourceId} (lemma: ${lemma}) in ${filePath}: ${error instanceof Error ? error.message : String(error)}`
     );
-    throw error; // Re-throw to handle at the transaction level
   }
 }
 
@@ -614,8 +619,7 @@ async function processSense(
   const senseSourceId = senseElement.getAttribute('Id');
 
   if (!senseSourceId) {
-    console.warn('Skipping sense: missing required id attribute');
-    return;
+    throw new Error(`Sense of entry ${parentSourceId} is missing the required Id attribute`);
   }
 
   try {
@@ -626,17 +630,16 @@ async function processSense(
       definition = definitionElement.textContent;
     }
 
-    const senseKey = await insertAndGetKey(
+    const senseKey = await insertNewAndGetKey(
       db,
       'Senses',
-      'SenseKey',
       {
         Id: senseSourceId,
         EntryKey: entryKey,
         Definition: definition,
         LanguageKey: languageKey,
       },
-      'Get sense key'
+      `sense Id ${senseSourceId} in entry ${parentSourceId}`
     );
 
     // Process StrongsCodes if present at the sense level
@@ -684,11 +687,9 @@ async function processSense(
       );
     }
   } catch (error: unknown) {
-    console.error(
-      `Error processing sense ${senseSourceId} (for entry: ${parentSourceId}):`,
-      error instanceof Error ? error.message : error
+    throw new Error(
+      `Sense ${senseSourceId} (entry ${parentSourceId}): ${error instanceof Error ? error.message : String(error)}`
     );
-    throw error;
   }
 }
 
@@ -706,8 +707,7 @@ async function processOccurrences(
     const corpusName = corpusElement.getAttribute('Id');
 
     if (!corpusName) {
-      console.warn('Skipping corpus: missing required id attribute');
-      continue;
+      throw new Error(`Occurrences of ${parentSourceId} have a Corpus without an Id attribute`);
     }
 
     try {
@@ -733,33 +733,31 @@ async function processOccurrences(
         const occurrenceElement = occurrenceElements[j];
         const occurrenceType = occurrenceElement.getAttribute('Type');
         if (occurrenceType !== 'U23003') {
-          console.warn('Skipping occurrence: type is not U23003');
-          continue;
+          throw new Error(
+            `Occurrence of ${parentSourceId} has type "${occurrenceType}" instead of U23003`
+          );
         }
 
         const occurrenceValue = occurrenceElement.textContent;
         if (!occurrenceValue) {
-          console.warn('Skipping occurrence: missing text content');
-          continue;
+          throw new Error(`Occurrence of ${parentSourceId} has no text content`);
         }
 
         const parsedReference = parseU23003Reference(occurrenceValue);
         if (!parsedReference) {
-          console.warn(`Skipping malformed occurrence value: ${occurrenceValue}`);
-          continue;
+          throw new Error(`Occurrence of ${parentSourceId} is malformed: ${occurrenceValue}`);
         }
 
         const { bookNum, chapterNum, verseNum, wordNum } = parsedReference;
 
-        // Skip if any of the values are undefined
+        // Fail if any of the values are undefined
         if (
           bookNum === undefined ||
           chapterNum === undefined ||
           verseNum === undefined ||
           wordNum === undefined
         ) {
-          console.warn(`Skipping malformed occurrence value: ${occurrenceValue}`);
-          continue;
+          throw new Error(`Occurrence of ${parentSourceId} is malformed: ${occurrenceValue}`);
         }
 
         occurrenceValues.push([itemKey, corpusKey, bookNum, chapterNum, verseNum, wordNum]);
@@ -800,8 +798,9 @@ async function processDomains(
     const domainCode = domainElement.getAttribute('Code');
 
     if (!taxonomyName || !domainCode) {
-      console.warn('Skipping domain: missing required attributes');
-      continue;
+      throw new Error(
+        `Domain of ${parentSourceId} is missing required attributes (Taxonomy or Code): Taxonomy="${taxonomyName}", Code="${domainCode}"`
+      );
     }
 
     try {
@@ -865,8 +864,11 @@ async function optimizeDatabase(db: Database): Promise<void> {
 }
 
 async function main() {
+  // Write to a temporary file and move it into place only after a successful import, so a failed
+  // import never leaves a partial database at the output path.
+  const tempOutput = `${options.output}.tmp`;
   console.log(`Initializing database at ${options.output}...`);
-  const db = await initializeDatabase(options.output, options.schema);
+  const db = await initializeDatabase(tempOutput, options.schema);
 
   try {
     for (const inputDir of options.input) {
@@ -878,12 +880,18 @@ async function main() {
     await optimizeDatabase(db);
 
     await db.close();
+    fs.renameSync(tempOutput, options.output);
     console.log('Import completed successfully!');
   } catch (error: unknown) {
     console.error('Error during import:', error instanceof Error ? error.message : error);
-    await db.close();
+    await db.close().catch(() => undefined);
+    fs.rmSync(tempOutput, { force: true });
     process.exit(1);
   }
 }
 
-main();
+main().catch((error: unknown) => {
+  console.error('Error during import:', error instanceof Error ? error.message : error);
+  fs.rmSync(`${options.output}.tmp`, { force: true });
+  process.exit(1);
+});

@@ -5,6 +5,8 @@
  * NOTE: Most code in this file is AI generated. Some human adjustments were made.
  */
 
+import { DOMParser } from '@xmldom/xmldom';
+
 // Define all constants in a single place
 export const DICTIONARY_TYPE = {
   GREEK: 'SDBG',
@@ -473,4 +475,37 @@ export function parseU23003Reference(reference: string): {
   const wordNum = parseInt(match[4], 10);
 
   return { bookNum, chapterNum, verseNum, wordNum };
+}
+
+/**
+ * Returns the contextual-meaning references (`CONReference`) that are missing from the lexical
+ * references (`LEXReferences`) of the lexical meaning they belong to. Only the first 14 digits of
+ * each reference are compared; trailing notes such as `{N:001}` and whitespace are ignored.
+ */
+export function findConReferencesMissingFromLex(
+  conReferences: string[],
+  lexReferences: string[]
+): string[] {
+  const reference14 = (reference: string) => reference.trim().substring(0, 14);
+  const lexSet = new Set(lexReferences.map(reference14));
+  return conReferences.map(reference14).filter(reference => !lexSet.has(reference));
+}
+
+/**
+ * Parses XML text, throwing on any well-formedness error. xmldom's default handler only logs
+ * errors and returns a partial document, which would silently drop the data after the error.
+ * Warnings are logged but do not fail the parse.
+ */
+export function parseXmlStrict(xml: string, sourceName: string): Document {
+  const fail = (message: string) => {
+    throw new Error(`Invalid XML in ${sourceName}: ${message.trim()}`);
+  };
+  return new DOMParser({
+    locator: {},
+    errorHandler: {
+      warning: (message: string) => console.warn(`XML warning in ${sourceName}: ${message.trim()}`),
+      error: fail,
+      fatalError: fail,
+    },
+  }).parseFromString(xml, 'text/xml');
 }

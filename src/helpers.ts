@@ -453,6 +453,9 @@ export interface LexReferenceOccurrences {
   unknownBook: string[];
 }
 
+/** The first 14 digits of a reference; trailing notes such as `{N:001}` and whitespace are ignored */
+const reference14 = (reference: string): string => reference.trim().substring(0, 14);
+
 /**
  * Converts the text of a lexical meaning's `LEXReference` elements into U23003 occurrences.
  *
@@ -473,7 +476,7 @@ export function occurrencesFromLexReferences(references: string[]): LexReference
 
   for (const reference of references) {
     const trimmed = reference.trim();
-    const id = trimmed.substring(0, 14);
+    const id = reference14(reference);
     if (!/^\d{14}$/.test(id)) {
       result.invalid.push(trimmed);
       continue;
@@ -547,9 +550,6 @@ export function parseU23003Reference(reference: string): {
 
   return { bookNum, chapterNum, verseNum, wordNum };
 }
-
-/** The first 14 digits of a reference; trailing notes such as `{N:001}` and whitespace are ignored */
-const reference14 = (reference: string): string => reference.trim().substring(0, 14);
 
 /**
  * The set of comparison keys of a lexical meaning's references, built once and used to check each

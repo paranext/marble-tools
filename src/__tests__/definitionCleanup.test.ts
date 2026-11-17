@@ -335,7 +335,7 @@ const emptyReferenceCounts = {
   otherDictionary: 0,
   unknownDictionary: 0,
   ambiguous: 0,
-  notEmitted: 0,
+  notOutput: 0,
   excludedByDesign: 0,
   unresolved: 0,
 };
@@ -513,7 +513,7 @@ describe('cleanUpDefinitions', () => {
         otherDictionary: 1,
         unknownDictionary: 0,
         ambiguous: 0,
-        notEmitted: 1,
+        notOutput: 1,
         excludedByDesign: 1,
         unresolved: 1,
       },

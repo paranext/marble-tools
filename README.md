@@ -47,7 +47,7 @@ python3 scripts/verify_english_db.py --db english.db --lexicon ../marble-lexicon
     [--links ../marble-indexes/Full] [--previous-db path/to/lexical.db]
 ```
 
-1. **Senses:** the database's sense IDs equal the lexical meanings the rules include (SDBH: not marked `N` or `X`, entry version 3 or higher; both: has an English sense with a definition or gloss). It fails when the rules yield no senses for a dictionary, such as when `--lexicon` is the wrong directory., every sense ID ends in `000`, and the entries match.
+1. **Senses:** the database's sense IDs equal the lexical meanings the rules include (SDBH: not marked `N` or `X`, entry version 3 or higher; both: has an English sense with a definition or gloss), every sense ID ends in `000`, and the entries match. It fails when the rules yield no senses for a dictionary, such as when `--lexicon` is the wrong directory.
 2. **Occurrences:** each sense's occurrences equal the references in its own `LEXReferences` (first 14 digits, even word IDs, word number not 0, each position once). SDBG meanings marked `N` or `X` are senses without occurrences.
 3. **Totals** (with `--previous-db`): entries, lexical senses and distinct word positions of each dictionary may not drop more than 2% (`MAX_DROP_FRACTION`) compared with the previously published database. It fails when the previous database has a total of 0 for a dictionary (or lacks the dictionary), since there is nothing to compare with.
 4. **Links** (with `--links`): informational only. Compares the database's sense occurrences with the lexical links in the published `MARBLELinks-*.XML` and prints "in step" or "drift". It never fails, because the links can lag behind lexicon edits.

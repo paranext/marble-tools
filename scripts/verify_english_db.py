@@ -91,7 +91,7 @@ def occurrences_of(references):
 
 
 def expected_from_lexicon(lexicon_root, name):
-    """Returns (senses, stats): senses maps sense ID -> set of occurrences."""
+    """Returns (senses, entry_ids, stats): senses maps sense ID -> set of occurrences."""
     senses = {}
     stats = collections.Counter()
     # Entries that lose all their senses are not in the database
@@ -104,7 +104,7 @@ def expected_from_lexicon(lexicon_root, name):
                 if not version.isdigit():
                     raise SystemExit(f'Entry {entry_id} in {path} has no numeric Version')
                 if int(version) < MIN_SDBH_ENTRY_VERSION:
-                    stats['entries below version 3'] += 1
+                    stats[f'entries below version {MIN_SDBH_ENTRY_VERSION}'] += 1
                     continue
             for meaning in entry.findall('BaseForms/BaseForm/LEXMeanings/LEXMeaning'):
                 flag = (meaning.get('IsBiblicalTerm') or '').upper()
@@ -147,8 +147,8 @@ def load_database(db_path, name):
             '''SELECT e.Id, s.Id FROM Senses s
                JOIN Entries e ON e.EntryKey = s.EntryKey
                JOIN LexicalReferenceTexts l ON l.LexicalReferenceTextKey = e.LexicalReferenceTextKey
-               JOIN Languages g ON g.LanguageKey = s.LanguageKey
-               WHERE l.Id = ? AND g.BCP47Code = ?''',
+               JOIN Languages lang ON lang.LanguageKey = s.LanguageKey
+               WHERE l.Id = ? AND lang.BCP47Code = ?''',
             (name, LANGUAGE),
         ):
             if sense_id in senses:
@@ -161,8 +161,8 @@ def load_database(db_path, name):
                JOIN Senses s ON s.SenseKey = o.SenseKey
                JOIN Entries e ON e.EntryKey = s.EntryKey
                JOIN LexicalReferenceTexts l ON l.LexicalReferenceTextKey = e.LexicalReferenceTextKey
-               JOIN Languages g ON g.LanguageKey = s.LanguageKey
-               WHERE l.Id = ? AND g.BCP47Code = ?''',
+               JOIN Languages lang ON lang.LanguageKey = s.LanguageKey
+               WHERE l.Id = ? AND lang.BCP47Code = ?''',
             (name, LANGUAGE),
         ):
             senses[sense_id].add((book, chapter, verse, word))
@@ -192,10 +192,8 @@ def sample(items):
 
 def check_senses_and_occurrences(db_path, lexicon_root):
     failures = []
-    expected_by_dictionary = {}
     for name in DICTIONARIES:
         expected, expected_entries, stats = expected_from_lexicon(lexicon_root, name)
-        expected_by_dictionary[name] = expected
         actual, actual_entries = load_database(db_path, name)
 
         missing = set(expected) - set(actual)
@@ -250,7 +248,7 @@ def check_senses_and_occurrences(db_path, lexicon_root):
                 f'check 2 {name}: {len(wrong)} senses have the wrong occurrences, e.g. '
                 + sample([w[0] for w in wrong])
             )
-    return failures, expected_by_dictionary
+    return failures
 
 
 def check_previous(db_path, previous_path):
@@ -305,10 +303,11 @@ def check_links(db_path, links_dir, lexicon_root):
         for path in lexicon_files(lexicon_root, name):
             for entry in ET.parse(path).getroot().iter('Lexicon_Entry'):
                 entry_id = (entry.get('Id') or '')[:6]
-                for b, base_form in enumerate(entry.findall('BaseForms/BaseForm')):
-                    for m, meaning in enumerate(base_form.findall('LEXMeanings/LEXMeaning')):
+                for base_form_index, base_form in enumerate(entry.findall('BaseForms/BaseForm')):
+                    for meaning_index, meaning in enumerate(
+                            base_form.findall('LEXMeanings/LEXMeaning')):
                         positions[entry_id + (meaning.get('Id') or '')[-9:]] = (
-                            entry.get('Lemma'), f'{b:03d}{m:03d}')
+                            entry.get('Lemma'), f'{base_form_index:03d}{meaning_index:03d}')
         actual, _ = load_database(db_path, name)
         in_db = set()
         for sense_id, occurrences in actual.items():
@@ -335,7 +334,7 @@ def main():
     parser.add_argument('--previous-db', help='the currently published database, for check 3')
     args = parser.parse_args()
 
-    failures, _ = check_senses_and_occurrences(args.db, args.lexicon)
+    failures = check_senses_and_occurrences(args.db, args.lexicon)
     if args.previous_db:
         failures += check_previous(args.db, args.previous_db)
     if args.links:

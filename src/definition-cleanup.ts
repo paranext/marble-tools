@@ -252,6 +252,22 @@ function arrowReplacement(before: string, after: string): string {
   return ' ';
 }
 
+/** Structure-symbol counts that are all zero */
+function emptySymbolCounts(): Record<StructureSymbol, number> {
+  return Object.fromEntries(STRUCTURE_SYMBOLS.map(symbol => [symbol, 0])) as Record<
+    StructureSymbol,
+    number
+  >;
+}
+
+/** Unspaced-symbol counts that are all zero */
+function emptyUnspacedSymbolCounts(): Record<UnspacedSymbol, number> {
+  return Object.fromEntries(UNSPACED_SYMBOLS.map(symbol => [symbol, 0])) as Record<
+    UnspacedSymbol,
+    number
+  >;
+}
+
 /**
  * Removes the structure symbols from a definition:
  *
@@ -275,8 +291,8 @@ export function stripStructureSymbols(text: string): {
   /** Symbols removed in step 2 or 3 */
   unspaced: Record<UnspacedSymbol, number>;
 } {
-  const counts = { '= ': 0, '► ': 0, '◄ ': 0, '≈ ': 0 };
-  const unspaced = { '=': 0, '►': 0, '◄': 0, '≈': 0 };
+  const counts = emptySymbolCounts();
+  const unspaced = emptyUnspacedSymbolCounts();
   let result = text;
   for (const symbol of STRUCTURE_SYMBOLS) {
     const parts = result.split(symbol);
@@ -568,7 +584,7 @@ export type CrossReferenceCounts = Record<LookupStep, number> & {
   unknownDictionary: number;
   ambiguous: number;
   /** Targets whose entry exists but is not output in this language */
-  notEmitted: number;
+  notOutput: number;
   /** Targets whose entry the conversion rules leave out */
   excludedByDesign: number;
   /** Targets that match no entry */
@@ -630,7 +646,7 @@ function emptyCrossReferenceCounts(): CrossReferenceCounts {
     otherDictionary: 0,
     unknownDictionary: 0,
     ambiguous: 0,
-    notEmitted: 0,
+    notOutput: 0,
     excludedByDesign: 0,
     unresolved: 0,
   };
@@ -641,8 +657,8 @@ function emptyCounts(): LanguageCleanupCounts {
     crossReferences: emptyCrossReferenceCounts(),
     glossCrossReferences: emptyCrossReferenceCounts(),
     malformedCrossReferences: 0,
-    symbols: { '= ': 0, '► ': 0, '◄ ': 0, '≈ ': 0 },
-    unspacedSymbols: { '=': 0, '►': 0, '◄': 0, '≈': 0 },
+    symbols: emptySymbolCounts(),
+    unspacedSymbols: emptyUnspacedSymbolCounts(),
     glossLeadingEquals: 0,
     bibleReferences: { rewritten: 0, unresolved: 0 },
     meaningLetters: emptyMeaningLetterCounts(),
@@ -654,10 +670,9 @@ function emptyCounts(): LanguageCleanupCounts {
  * cross-reference targets in definitions and glosses to the exact lemma of an output entry, and
  * numbers meaning letters in definitions. A target whose dictionary is the one being converted
  * (compared without regard to case, as MARBLE has `sdbh` and `sdbg`) is written with the canonical
- * dictionary ID. Run
- * it once the entries that will be output are final, since a target is rewritten only if its entry
- * is output. Targets are matched against every source entry, so a target that means an entry that
- * is not output is reported rather than matched to a different entry.
+ * dictionary ID. Run it once the entries that will be output are final, since a target is rewritten
+ * only if its entry is output. Targets are matched against every source entry, so a target that
+ * means an entry that is not output is reported rather than matched to a different entry.
  */
 export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCleanupReport {
   const {
@@ -753,7 +768,7 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
               reason: `entry ${found.id}: ${found.excludedByDesign}`,
             });
           } else {
-            refs.notEmitted++;
+            refs.notOutput++;
             addProblem(unresolved, {
               ...problem,
               reason: `entry ${found.id} is not output in this language`,

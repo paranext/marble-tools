@@ -372,7 +372,7 @@ function processFile(
           // Skip empty codes
           if (!codes || codes.length === 0) {
             console.warn(
-              `Empty ${subDomainChildTagName} code with value "${value}" for element ${container.getAttribute('Id')} in file ${path.basename(filePath)}`
+              `Empty ${subDomainChildTagName} code with value "${value}" for element ${container.getAttribute('Id')} in file ${fileName}`
             );
             continue;
           }
@@ -398,7 +398,7 @@ function processFile(
         // Skip empty codes
         if (!codes || codes.length === 0) {
           console.warn(
-            `Empty ${childTagName} code with value "${value}" for element ${container.getAttribute('Id')} in file ${path.basename(filePath)}`
+            `Empty ${childTagName} code with value "${value}" for element ${container.getAttribute('Id')} in file ${fileName}`
           );
           continue;
         }
@@ -423,7 +423,7 @@ function processFile(
         // Skip empty codes
         if (!codes || codes.length === 0) {
           console.warn(
-            `Empty LEXCoreDomain code with value "${value}" for element ${container.getAttribute('Id')} in file ${path.basename(filePath)}`
+            `Empty LEXCoreDomain code with value "${value}" for element ${container.getAttribute('Id')} in file ${fileName}`
           );
           continue;
         }
@@ -480,7 +480,7 @@ function processFile(
       for (const missing of findConReferencesMissingFromLex(conReferences, lexReferenceKeys)) {
         stats.conReferencesMissingFromLex++;
         console.warn(
-          `CONReference ${missing} of entry ${entryId}, lexical meaning ${lexMeaning.getAttribute('Id')}, contextual meaning ${conMeaning.getAttribute('Id')} is not in the lexical meaning's LEXReferences (file ${path.basename(filePath)})`
+          `CONReference ${missing} of entry ${entryId}, lexical meaning ${lexMeaning.getAttribute('Id')}, contextual meaning ${conMeaning.getAttribute('Id')} is not in the lexical meaning's LEXReferences (file ${fileName})`
         );
       }
     }
@@ -515,7 +515,7 @@ function processFile(
       entryVersion !== undefined && entryVersion < ENTRY_VERSION.MIN_LEXICAL;
     const allLexMeanings = findElements(entry, 'LEXMeaning');
     const areAllMeaningsExcluded =
-      dictionaryType == DICTIONARY_TYPE.HEBREW &&
+      dictionaryType === DICTIONARY_TYPE.HEBREW &&
       allLexMeanings.length > 0 &&
       allLexMeanings.every(isNotLinked);
     definitionSources.sourceEntries.push({
@@ -533,7 +533,7 @@ function processFile(
     // marked M. SDBG is 100% done so you can ignore the version number.
     if (isVersionExcluded) {
       console.warn(
-        `Skipping entry "${lemma}" (${entryId}) with version ${entryVersion} in file ${path.basename(filePath)}`
+        `Skipping entry "${lemma}" (${entryId}) with version ${entryVersion} in file ${fileName}`
       );
       continue;
     }
@@ -575,7 +575,7 @@ function processFile(
         const lexMeaning = lexMeanings[lmIdx];
         const lexMeaningId = lexMeaning.getAttribute('Id') || '';
 
-        if (dictionaryType == DICTIONARY_TYPE.HEBREW && isNotLinked(lexMeaning)) continue;
+        if (dictionaryType === DICTIONARY_TYPE.HEBREW && isNotLinked(lexMeaning)) continue;
 
         if (!lexMeaningId) {
           throw new Error(
@@ -962,8 +962,8 @@ function checkSenseDomainsOrExit(
 function printDefinitionCleanupReport(report: DefinitionCleanupReport): void {
   for (const [language, counts] of Object.entries(report.byLanguage)) {
     const {
-      crossReferences: refs,
-      glossCrossReferences: glossRefs,
+      crossReferences: definitionReferences,
+      glossCrossReferences: glossReferences,
       malformedCrossReferences,
       symbols,
       unspacedSymbols,
@@ -971,17 +971,23 @@ function printDefinitionCleanupReport(report: DefinitionCleanupReport): void {
       bibleReferences,
       meaningLetters: letters,
     } = counts;
-    const left = (r: CrossReferenceCounts): string =>
+    const describeLeftUnchanged = (r: CrossReferenceCounts): string =>
       `other dictionary ${r.otherDictionary}, unknown dictionary ${r.unknownDictionary}, ` +
       `excluded by design ${r.excludedByDesign}, ambiguous ${r.ambiguous}, ` +
-      `not output in this language ${r.notEmitted}, not found ${r.unresolved}`;
-    const resolved = (r: CrossReferenceCounts): string =>
+      `not output in this language ${r.notOutput}, not found ${r.unresolved}`;
+    const describeResolved = (r: CrossReferenceCounts): string =>
       LOOKUP_STEPS.map(step => `${step} ${r[step]}`).join(', ');
     console.log(`  ${language}:`);
-    console.log(`    definition cross-reference targets resolved: ${resolved(refs)}`);
-    console.log(`    definition cross-reference targets left unchanged: ${left(refs)}`);
-    console.log(`    gloss cross-reference targets resolved: ${resolved(glossRefs)}`);
-    console.log(`    gloss cross-reference targets left unchanged: ${left(glossRefs)}`);
+    console.log(
+      `    definition cross-reference targets resolved: ${describeResolved(definitionReferences)}`
+    );
+    console.log(
+      `    definition cross-reference targets left unchanged: ${describeLeftUnchanged(definitionReferences)}`
+    );
+    console.log(`    gloss cross-reference targets resolved: ${describeResolved(glossReferences)}`);
+    console.log(
+      `    gloss cross-reference targets left unchanged: ${describeLeftUnchanged(glossReferences)}`
+    );
     console.log(`    malformed {L: markers in definitions: ${malformedCrossReferences}`);
     console.log(
       `    structure symbols removed: ` +

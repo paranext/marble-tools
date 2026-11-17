@@ -34,6 +34,15 @@ program
 const options = program.opts();
 const verbose = options.verbose || false;
 
+// The database is built here and moved to the output path only after a successful import, so a
+// failed import never leaves a partial database at the output path.
+const tempOutput = `${options.output}.tmp`;
+
+/** The message of a thrown value, which is not necessarily an `Error` */
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // Helper function to log detailed error information
 function logError(error: unknown, context: string, details: Record<string, unknown> = {}): void {
   console.error(`Error in ${context}:`);
@@ -158,28 +167,20 @@ async function insert(
   tableName: string,
   columnsAndValues: Record<string, unknown>
 ): Promise<sqlite3.RunResult> {
-  try {
-    // Extract columns and ensure values are in matching order
-    const columns = Object.keys(columnsAndValues);
-    const values = columns.map(col => columnsAndValues[col]);
+  // Extract columns and ensure values are in matching order
+  const columns = Object.keys(columnsAndValues);
+  const values = columns.map(col => columnsAndValues[col]);
 
-    // Build the INSERT statement
-    const columnList = columns.join(', ');
-    const placeholders = columns.map(() => '?').join(', ');
-    const sql = `INSERT OR IGNORE INTO ${tableName} (${columnList}) VALUES (${placeholders})`;
+  // Build the INSERT statement
+  const columnList = columns.join(', ');
+  const placeholders = columns.map(() => '?').join(', ');
+  const sql = `INSERT OR IGNORE INTO ${tableName} (${columnList}) VALUES (${placeholders})`;
 
-    // Perform the insert
-    return safeRun(db, sql, values, `Insert ${tableName}`, {
-      tableName,
-      columnsAndValues,
-    });
-  } catch (error: unknown) {
-    console.error(
-      `Error in insert for ${tableName}:`,
-      error instanceof Error ? error.message : error
-    );
-    throw error;
-  }
+  // Perform the insert
+  return safeRun(db, sql, values, `Insert ${tableName}`, {
+    tableName,
+    columnsAndValues,
+  });
 }
 
 // Bulk insert helper function
@@ -210,29 +211,21 @@ async function getKey(
   columnsAndValues: Record<string, unknown>,
   context: string
 ): Promise<number> {
-  try {
-    // Extract columns and ensure values are in matching order
-    const columns = Object.keys(columnsAndValues);
-    const values = columns.map(col => columnsAndValues[col]);
+  // Extract columns and ensure values are in matching order
+  const columns = Object.keys(columnsAndValues);
+  const values = columns.map(col => columnsAndValues[col]);
 
-    // Build the SELECT statement with needed WHERE conditions
-    const whereClause = columns.map(column => `${column} = ?`).join(' AND ');
-    const query = `SELECT ${keyColumn} FROM ${tableName} WHERE ${whereClause}`;
+  // Build the SELECT statement with needed WHERE conditions
+  const whereClause = columns.map(column => `${column} = ?`).join(' AND ');
+  const query = `SELECT ${keyColumn} FROM ${tableName} WHERE ${whereClause}`;
 
-    const record = await safeGet(db, query, values, `Get ${tableName} key`, columnsAndValues);
-    if (!record || record[keyColumn] === undefined) {
-      throw new Error(
-        `Failed to get ${keyColumn} for ${tableName} with conditions ${JSON.stringify(columnsAndValues)} when ${context}`
-      );
-    }
-    return record[keyColumn];
-  } catch (error: unknown) {
-    console.error(
-      `Error in getKey for ${tableName}:`,
-      error instanceof Error ? error.message : error
+  const record = await safeGet(db, query, values, `Get ${tableName} key`, columnsAndValues);
+  if (!record || record[keyColumn] === undefined) {
+    throw new Error(
+      `Failed to get ${keyColumn} for ${tableName} with conditions ${JSON.stringify(columnsAndValues)} when ${context}`
     );
-    throw error;
   }
+  return record[keyColumn];
 }
 
 // Insert a record, if it is unique, and return its key (or the existing key if it already exists)
@@ -334,8 +327,8 @@ async function processLexicalReference(filePath: string, db: Database): Promise<
         const failures = results.filter(
           (result): result is PromiseRejectedResult => result.status === 'rejected'
         );
-        // Log every failure, since only the first can be thrown
-        for (const failure of failures) console.error('Entry failed:', failure.reason);
+        // Log the failures after the first, since only the first is thrown (and logged by the caller)
+        for (const failure of failures.slice(1)) console.error('Entry failed:', failure.reason);
         if (failures.length > 0) throw failures[0].reason;
 
         // Update progress on same line
@@ -354,13 +347,8 @@ async function processLexicalReference(filePath: string, db: Database): Promise<
     try {
       await db.exec('ROLLBACK');
     } catch (rollbackError: unknown) {
-      console.error(
-        'Rollback failed:',
-        rollbackError instanceof Error ? rollbackError.message : rollbackError
-      );
+      console.error('Rollback failed:', errorMessage(rollbackError));
     }
-    console.error(`Error processing ${filePath}:`, error instanceof Error ? error.message : error);
-
     if (verbose) {
       // Log additional info about the database state
       try {
@@ -376,9 +364,7 @@ async function processLexicalReference(filePath: string, db: Database): Promise<
     }
 
     // A file that fails to import fails the whole import
-    throw new Error(
-      `Failed to import ${filePath}: ${error instanceof Error ? error.message : String(error)}`
-    );
+    throw new Error(`Failed to import ${filePath}: ${errorMessage(error)}`, { cause: error });
   }
 }
 
@@ -463,11 +449,9 @@ async function processTaxonomy(
       }
     }
   } catch (error: unknown) {
-    console.error(
-      `Error processing taxonomy ${taxonomyId} (${taxonomyTitle}):`,
-      error instanceof Error ? error.message : error
-    );
-    throw error;
+    throw new Error(`Taxonomy ${taxonomyId} (${taxonomyTitle}): ${errorMessage(error)}`, {
+      cause: error,
+    });
   }
 }
 
@@ -533,11 +517,7 @@ async function processSubDomain(
 
     return domainKey;
   } catch (error: unknown) {
-    console.error(
-      `Error processing subdomain ${domainCode}:`,
-      error instanceof Error ? error.message : error
-    );
-    throw error;
+    throw new Error(`Subdomain ${domainCode}: ${errorMessage(error)}`, { cause: error });
   }
 }
 
@@ -666,7 +646,8 @@ async function processEntry(
     }
   } catch (error: unknown) {
     throw new Error(
-      `Entry ${entrySourceId} (lemma: ${lemma}) in ${filePath}: ${error instanceof Error ? error.message : String(error)}`
+      `Entry ${entrySourceId} (lemma: ${lemma}) in ${filePath}: ${errorMessage(error)}`,
+      { cause: error }
     );
   }
 }
@@ -749,9 +730,9 @@ async function processSense(
       );
     }
   } catch (error: unknown) {
-    throw new Error(
-      `Sense ${senseSourceId} (entry ${parentSourceId}): ${error instanceof Error ? error.message : String(error)}`
-    );
+    throw new Error(`Sense ${senseSourceId} (entry ${parentSourceId}): ${errorMessage(error)}`, {
+      cause: error,
+    });
   }
 }
 
@@ -835,11 +816,9 @@ async function processOccurrences(
         );
       }
     } catch (error: unknown) {
-      console.error(
-        `Error processing corpus ${corpusName} for ${parentSourceId}:`,
-        error instanceof Error ? error.message : error
-      );
-      throw error;
+      throw new Error(`Corpus ${corpusName} of ${parentSourceId}: ${errorMessage(error)}`, {
+        cause: error,
+      });
     }
   }
 }
@@ -886,11 +865,10 @@ async function processDomains(
         DomainCode: domainCode,
       });
     } catch (error: unknown) {
-      console.error(
-        `Error processing domain ${taxonomyName}:${domainCode} for ${parentSourceId}:`,
-        error instanceof Error ? error.message : error
+      throw new Error(
+        `Domain ${taxonomyName}:${domainCode} of ${parentSourceId}: ${errorMessage(error)}`,
+        { cause: error }
       );
-      throw error;
     }
   }
 }
@@ -926,9 +904,6 @@ async function optimizeDatabase(db: Database): Promise<void> {
 }
 
 async function main() {
-  // Write to a temporary file and move it into place only after a successful import, so a failed
-  // import never leaves a partial database at the output path.
-  const tempOutput = `${options.output}.tmp`;
   console.log(`Building ${options.output} via ${tempOutput}...`);
   let db: Database | undefined;
   let builtDatabaseComplete = false;
@@ -949,7 +924,7 @@ async function main() {
     fs.renameSync(tempOutput, options.output);
     console.log('Import completed successfully!');
   } catch (error: unknown) {
-    console.error('Error during import:', error instanceof Error ? error.message : error);
+    console.error('Error during import:', errorMessage(error));
     await db?.close().catch(() => undefined);
     if (builtDatabaseComplete) {
       // The database was fully built; only moving it into place failed, so keep it.
@@ -962,7 +937,7 @@ async function main() {
 }
 
 main().catch((error: unknown) => {
-  console.error('Error during import:', error instanceof Error ? error.message : error);
-  fs.rmSync(`${options.output}.tmp`, { force: true });
+  console.error('Error during import:', errorMessage(error));
+  fs.rmSync(tempOutput, { force: true });
   process.exit(1);
 });

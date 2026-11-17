@@ -363,6 +363,8 @@ export interface MeaningLetterCounts {
   singleMeaning: number;
   /** Letters not after a link that were left because their base form has fewer meanings than the letter's position */
   outOfRange: number;
+  /** Letters not after a link that were left because the meaning they name is not output */
+  notOutput: number;
   /** Letters after a link that were numbered by the linked entry */
   linkedReplaced: number;
   /** Letters after a link that were left because the link does not resolve to an output entry */
@@ -387,8 +389,8 @@ export interface LinkTarget {
 
 /**
  * Finds the number the Dictionary panel shows for a meaning of the entry a link targets, or
- * `undefined` when the link does not resolve to an output entry (`'unresolved'`) or the entry has
- * no such output meaning (`'noMeaning'`).
+ * `'unresolved'` when the link does not resolve to an output entry, or `'noMeaning'` when the entry
+ * has no such output meaning.
  *
  * @param meaningIndex The zero-based position of the meaning within its base form
  */
@@ -397,32 +399,27 @@ export type LinkedMeaningNumber = (
   meaningIndex: number
 ) => number | 'unresolved' | 'noMeaning';
 
-/** A cross-reference directly followed by a meaning letter, or a meaning letter on its own */
-const LETTER_AFTER_LINK_REGEX = /\{L:[^<}]*<([A-Za-z-]+):([^>}]*)>\}\[([a-z])\]|\[([a-z])\]/g;
+/**
+ * Finds the number the Dictionary panel shows for a meaning of the entry whose definition is being
+ * cleaned up, or `'noMeaning'` when that meaning is not output.
+ *
+ * @param meaningIndex The zero-based position of the meaning within the definition's base form
+ */
+export type OwnMeaningNumber = (meaningIndex: number) => number | 'noMeaning';
 
 /**
- * Replaces `[a]`, `[b]`, … with `(1)`, `(2)`, … (the letter's position in the alphabet unless the
- * letter follows a link; see the module comment).
- *
- * A letter directly after a cross-reference is numbered by `linkedMeaningNumber`; it is left as it
- * is when that returns no number, or when none is given.
- *
- * Any other letter is numbered exactly as Paratext 9 does: only when the base form whose
- * definition it is has more than one lexical meaning (counting meanings that are not output), and
- * the letter's position is within that count.
- *
- * @param baseFormMeaningCount The number of lexical meanings of the base form whose definition
- *   `text` is, including meanings that are not output
+ * A cross-reference directly followed by a meaning letter, or a meaning letter on its own. The link
+ * part matches the same links as `CROSS_REFERENCE_REGEX`.
  */
-export function replaceMeaningLetters(
-  text: string,
-  baseFormMeaningCount: number,
-  linkedMeaningNumber?: LinkedMeaningNumber
-): MeaningLetterCounts & { text: string } {
-  const counts: MeaningLetterCounts = {
+const LETTER_AFTER_LINK_REGEX = /\{L:[^<}]*<([A-Za-z-]+):([^>}]*)>\}\[([a-z])\]|\[([a-z])\]/g;
+
+/** Meaning-letter counts that are all zero */
+function emptyMeaningLetterCounts(): MeaningLetterCounts {
+  return {
     replaced: 0,
     singleMeaning: 0,
     outOfRange: 0,
+    notOutput: 0,
     linkedReplaced: 0,
     linkedUnresolved: 0,
     linkedNoMeaning: 0,
@@ -430,6 +427,31 @@ export function replaceMeaningLetters(
     linkedPositionDiffers: 0,
     linkedPositionAbsent: 0,
   };
+}
+
+/**
+ * Replaces `[a]`, `[b]`, … with `(1)`, `(2)`, … (see the module comment).
+ *
+ * A letter directly after a cross-reference is numbered by `linkedMeaningNumber`; it is left as it
+ * is when that returns no number, or when none is given.
+ *
+ * Any other letter is numbered when Paratext 9 numbers it: only when the base form whose definition
+ * it is has more than one lexical meaning (counting meanings that are not output), and the letter's
+ * position is within that count. The number is the one `ownMeaningNumber` gives, which is the
+ * meaning's position among the entry's output senses as the Dictionary panel numbers them; in an
+ * entry with several base forms that differs from the letter's position in the alphabet. Without
+ * `ownMeaningNumber`, the letter's position in the alphabet is used.
+ *
+ * @param baseFormMeaningCount The number of lexical meanings of the base form whose definition
+ *   `text` is, including meanings that are not output
+ */
+export function replaceMeaningLetters(
+  text: string,
+  baseFormMeaningCount: number,
+  linkedMeaningNumber?: LinkedMeaningNumber,
+  ownMeaningNumber?: OwnMeaningNumber
+): MeaningLetterCounts & { text: string } {
+  const counts = emptyMeaningLetterCounts();
   const alphabetPosition = (letter: string) => letter.charCodeAt(0) - 'a'.charCodeAt(0) + 1;
   const result = text.replace(
     LETTER_AFTER_LINK_REGEX,
@@ -461,6 +483,7 @@ export function replaceMeaningLetters(
         if (target.position.length < 3) counts.linkedPositionAbsent++;
         else if (Number(target.position.slice(-3)) === meaningIndex) counts.linkedPositionAgrees++;
         else counts.linkedPositionDiffers++;
+        // The letter is the match's last three characters
         return `${match.slice(0, match.length - 3)}(${number})`;
       }
       const position = alphabetPosition(bareLetter ?? '');
@@ -472,8 +495,13 @@ export function replaceMeaningLetters(
         counts.outOfRange++;
         return match;
       }
+      const number = ownMeaningNumber ? ownMeaningNumber(position - 1) : position;
+      if (number === 'noMeaning') {
+        counts.notOutput++;
+        return match;
+      }
       counts.replaced++;
-      return `(${position})`;
+      return `(${number})`;
     }
   );
   return { text: result, ...counts };
@@ -617,17 +645,7 @@ function emptyCounts(): LanguageCleanupCounts {
     unspacedSymbols: { '=': 0, '►': 0, '◄': 0, '≈': 0 },
     glossLeadingEquals: 0,
     bibleReferences: { rewritten: 0, unresolved: 0 },
-    meaningLetters: {
-      replaced: 0,
-      singleMeaning: 0,
-      outOfRange: 0,
-      linkedReplaced: 0,
-      linkedUnresolved: 0,
-      linkedNoMeaning: 0,
-      linkedPositionAgrees: 0,
-      linkedPositionDiffers: 0,
-      linkedPositionAbsent: 0,
-    },
+    meaningLetters: emptyMeaningLetterCounts(),
   };
 }
 
@@ -672,6 +690,12 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
     if (existing) existing.count++;
     else list.set(key, { ...problem, count: 1 });
   };
+
+  // The sense IDs of every lexical meaning of a sense's base form, by the sense's ID
+  const baseFormBySenseId = new Map<string, string[]>();
+  for (const baseForms of meaningSenseIdsByEntryId.values())
+    for (const senseIds of baseForms)
+      for (const senseId of senseIds) if (senseId) baseFormBySenseId.set(senseId, senseIds);
 
   for (const language in entriesByLanguage) {
     const counts = emptyCounts();
@@ -789,11 +813,20 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
         for (const symbol of UNSPACED_SYMBOLS)
           counts.unspacedSymbols[symbol] += stripped.unspaced[symbol];
 
+        // The number of a meaning of this sense's own base form, as the Dictionary panel shows it
+        const ownBaseForm = baseFormBySenseId.get(sense.id);
+        const ownMeaningNumber: OwnMeaningNumber = meaningIndex => {
+          const senseId = ownBaseForm?.[meaningIndex];
+          const number = senseId === undefined ? -1 : entry.senses.findIndex(s => s.id === senseId);
+          return number === -1 ? 'noMeaning' : number + 1;
+        };
+
         // Letters are numbered before the targets are rewritten, while the link still reads as written
         const lettered = replaceMeaningLetters(
           stripped.text,
           baseFormMeaningCountBySenseId.get(sense.id) ?? 0,
-          linkedMeaningNumber
+          linkedMeaningNumber,
+          ownMeaningNumber
         );
         for (const key of Object.keys(counts.meaningLetters) as (keyof MeaningLetterCounts)[])
           counts.meaningLetters[key] += lettered[key];

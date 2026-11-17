@@ -998,7 +998,8 @@ function printDefinitionCleanupReport(report: DefinitionCleanupReport): void {
     );
     console.log(
       `    meaning letters: ${letters.replaced} numbered; left: base form with one meaning ` +
-        `${letters.singleMeaning}, beyond the base form's meanings ${letters.outOfRange}`
+        `${letters.singleMeaning}, beyond the base form's meanings ${letters.outOfRange}, ` +
+        `meaning not output ${letters.notOutput}`
     );
     console.log(
       `    meaning letters after a link: ${letters.linkedReplaced} numbered by the linked entry ` +

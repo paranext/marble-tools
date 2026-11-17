@@ -317,6 +317,7 @@ const noLetters = {
   replaced: 0,
   singleMeaning: 0,
   outOfRange: 0,
+  notOutput: 0,
   linkedReplaced: 0,
   linkedUnresolved: 0,
   linkedNoMeaning: 0,
@@ -489,7 +490,10 @@ describe('cleanUpDefinitions', () => {
         ['s1c', 1],
         ['s2a', 1],
       ]),
-      meaningSenseIdsByEntryId: new Map(),
+      meaningSenseIdsByEntryId: new Map([
+        ['1', [['s1a', 's1b'], ['s1c']]],
+        ['2', [['s2a']]],
+      ]),
     });
 
     expect(entriesByLanguage.en[lemmaA].senses.map(s => s.definition)).toEqual([
@@ -818,9 +822,48 @@ describe('cleanUpDefinitions', () => {
       expect(report.byLanguage.en.meaningLetters.linkedUnresolved).toBe(1);
     });
 
-    test('numbers a letter with no link before it by the current entry, as Paratext 9 does', () => {
+    test('numbers a letter with no link before it only when its base form has that many meanings', () => {
       expect(clean('see [b]').definition).toBe('see [b]');
-      expect(clean('see [b]', 2).definition).toBe('see (2)');
+      expect(clean('see [c]', 2).definition).toBe('see [c]');
+    });
+  });
+
+  describe('meaning letters with no link before them', () => {
+    // Entry "own" has two base forms: base form 0 has one meaning, base form 1 has three, the
+    // middle one not output, so the panel numbers the output senses 1 to 3 across the whole entry
+    function clean(definitionOf: Record<string, string>) {
+      const senses = ['o00', 'o10', 'o12'].map(id => sense(id, definitionOf[id] ?? 'meaning'));
+      const entriesByLanguage = { en: { own: { id: '1', lemma: 'own', senses } } };
+      const report = cleanUpDefinitions({
+        dictionaryId: 'SDBH',
+        entriesByLanguage,
+        sourceEntries: [entry('1', 'own')],
+        baseFormMeaningCountBySenseId: new Map([
+          ['o00', 1],
+          ['o10', 3],
+          ['o12', 3],
+        ]),
+        meaningSenseIdsByEntryId: new Map([['1', [['o00'], ['o10', 'o11', 'o12']]]]),
+      });
+      return { senses: entriesByLanguage.en.own.senses, report };
+    }
+
+    test("numbers a letter by its meaning's position among the entry's output senses", () => {
+      const { senses, report } = clean({ o12: 'with the quality mentioned under [a]; see [c]' });
+      expect(senses[2].definition).toBe('with the quality mentioned under (2); see (3)');
+      expect(report.byLanguage.en.meaningLetters).toMatchObject({ replaced: 2 });
+    });
+
+    test('leaves a letter whose meaning is not output', () => {
+      const { senses, report } = clean({ o10: 'see [b]' });
+      expect(senses[1].definition).toBe('see [b]');
+      expect(report.byLanguage.en.meaningLetters).toMatchObject({ replaced: 0, notOutput: 1 });
+    });
+
+    test('leaves a letter in a base form with one meaning, as Paratext 9 does', () => {
+      const { senses, report } = clean({ o00: 'see [a]' });
+      expect(senses[0].definition).toBe('see [a]');
+      expect(report.byLanguage.en.meaningLetters).toMatchObject({ singleMeaning: 1 });
     });
   });
 });

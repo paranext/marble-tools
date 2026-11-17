@@ -7,7 +7,8 @@
  *   Paratext 9, every remaining `►`, `◄` and `≈`, and an `=` that starts the definition or follows
  *   whitespace and is directly followed by a non-space, are removed too, because the source
  *   sometimes omits the space after a structure symbol. So is the full-width `＝` that the Chinese
- *   definitions use as their definition marker.
+ *   definitions use as their definition marker. Where removed symbols stood between two words, a
+ *   space is left so the words are not joined.
  * - Each cross-reference target `{L:text<DICTIONARY:lemma>}` is rewritten to the exact lemma of the
  *   entry it means, because the Dictionary panel looks the target up by exact lemma.
  * - `[a]`, `[b]`, … (a meaning, by position) become `(1)`, `(2)`, …:
@@ -19,8 +20,10 @@
  *     of a one-meaning entry as letters although they are valid for the entry they follow. A letter
  *     whose link does not resolve to an output entry, or whose meaning does not exist or is not
  *     output, is left as it is.
- *   - Any other letter is numbered as in Paratext 9: only when the base form whose definition it
- *     is has more than one meaning, and up to that number.
+ *   - Any other letter is numbered when Paratext 9 numbers it: only when the base form whose
+ *     definition it is has more than one meaning, and up to that number. Its number is the position
+ *     of that meaning among the entry's output senses across all its base forms, as the Dictionary
+ *     panel numbers them, so it can differ from the letter's position in the alphabet.
  *
  * Glosses are rendered by the Dictionary panel with the same markup parser, so their cross-reference
  * targets are rewritten in the same way. Their symbols and `[a]` letters are left alone: in glosses
@@ -223,6 +226,9 @@ export type UnspacedSymbol = (typeof UNSPACED_SYMBOLS)[number];
  */
 const UNSPACED_EQUALS_REGEX = /\{L:[^}]*\}|(^|\s)=(?=\S)|(^|\s|[：；])＝/g;
 
+/** A run of structure symbols that are each followed by a space */
+const SPACED_SYMBOLS_REGEX = /(?:[=►◄≈] )+/g;
+
 /** A run of the arrow and approximation symbols */
 const ARROW_SYMBOLS_REGEX = /[►◄≈]+/g;
 
@@ -237,16 +243,19 @@ const OPENER_REGEX = /[({[“‘«"']/;
 const WORD_START_REGEX = /[\p{L}\p{M}\p{N}({[“‘«"']/u;
 
 /**
- * What replaces an arrow or approximation symbol written without its space: a space when it stands
+ * What replaces a removed run of structure symbols: a space when it stands
  * between a word (or punctuation such as `;`) and the next word, so the two are not joined, and
- * nothing otherwise (at either end, next to whitespace, before closing punctuation, inside
- * `{L:` markup, or in scripts written without spaces).
+ * nothing otherwise (at either end, next to whitespace, after another structure symbol or a format
+ * character, before closing punctuation, inside `{L:` markup, or in scripts written without spaces).
  */
 function arrowReplacement(before: string, after: string): string {
   const previous = before.at(-1);
   const next = after.at(0);
   if (previous === undefined || next === undefined) return '';
-  if (/\s/.test(previous) || OPENER_REGEX.test(previous) || /\{[A-Z]:$/.test(before)) return '';
+  // A structure symbol before the run is removed by a later step, which then decides the space;
+  // a format character such as a direction mark does not end a word
+  if (/[\s=►◄≈\p{Cf}]/u.test(previous) || OPENER_REGEX.test(previous) || /\{[A-Z]:$/.test(before))
+    return '';
   if (!WORD_START_REGEX.test(next)) return '';
   if (NO_SPACE_SCRIPT_REGEX.test(previous) || NO_SPACE_SCRIPT_REGEX.test(next)) return '';
   return ' ';
@@ -271,17 +280,18 @@ function emptyUnspacedSymbolCounts(): Record<UnspacedSymbol, number> {
 /**
  * Removes the structure symbols from a definition:
  *
- * 1. Every symbol followed by a space (`= `, `► `, `◄ `, `≈ `), as Paratext 9 does, one symbol
- *    after the other.
+ * 1. Every symbol followed by a space (`= `, `► `, `◄ `, `≈ `), as Paratext 9 does. Where a run of
+ *    them stood between two words with no other space, it is replaced by a space, so the words are
+ *    not joined (see `arrowReplacement`).
  * 2. Every `►`, `◄` and `≈` that remains, whatever follows it. The source sometimes omits the space
- *    after one. Where the symbol stood between two words it is replaced by a space, so they are not
- *    joined (see `arrowReplacement`).
+ *    after one. Where the symbol stood between two words it is replaced by a space, as in step 1.
  * 3. Every `=` that starts the text or follows whitespace and is directly followed by a non-space
  *    character, for the same reason. An `=` anywhere else (inside a word, inside cross-reference
  *    markup, or with nothing after it) is kept. A full-width `＝` is removed where it starts the text
  *    or follows whitespace, `：` or `；`, and is counted with the `=`.
  *
- * Otherwise only the symbol is removed; the text around it is left as it is. The result is trimmed.
+ * Otherwise only the symbols are removed; the text around them is left as it is. The result is
+ * trimmed.
  * Line breaks (`|`) are left alone.
  */
 export function stripStructureSymbols(text: string): {
@@ -293,12 +303,10 @@ export function stripStructureSymbols(text: string): {
 } {
   const counts = emptySymbolCounts();
   const unspaced = emptyUnspacedSymbolCounts();
-  let result = text;
-  for (const symbol of STRUCTURE_SYMBOLS) {
-    const parts = result.split(symbol);
-    counts[symbol] = parts.length - 1;
-    result = parts.join('');
-  }
+  let result = text.replace(SPACED_SYMBOLS_REGEX, (run: string, offset: number, whole: string) => {
+    for (let i = 0; i < run.length; i += 2) counts[run.slice(i, i + 2) as StructureSymbol]++;
+    return arrowReplacement(whole.slice(0, offset), whole.slice(offset + run.length));
+  });
   result = result.replace(ARROW_SYMBOLS_REGEX, (run: string, offset: number, whole: string) => {
     for (const symbol of run) unspaced[symbol as '►' | '◄' | '≈']++;
     return arrowReplacement(whole.slice(0, offset), whole.slice(offset + run.length));

@@ -213,6 +213,28 @@ describe('stripStructureSymbols', () => {
     expect(stripStructureSymbols('x►{L:a<SDBH:b>}').text).toBe('x {L:a<SDBH:b>}');
   });
 
+  test('leaves a space where a symbol with its space stood between two words', () => {
+    expect(stripStructureSymbols('= um homem;◄ filho de').text).toBe('um homem; filho de');
+    expect(stripStructureSymbols('{L:Tekoa<SDBH:b>}► where').text).toBe('{L:Tekoa<SDBH:b>} where');
+    expect(stripStructureSymbols('hence:= process').text).toBe('hence: process');
+    expect(stripStructureSymbols('sour;= ◄ due')).toEqual({
+      text: 'sour; due',
+      counts: { '= ': 1, '► ': 0, '◄ ': 1, '≈ ': 0 },
+      unspaced: noUnspaced,
+    });
+  });
+
+  test('leaves no space for a symbol with its space after an opening bracket or in Chinese', () => {
+    expect(stripStructureSymbols('(= delay)').text).toBe('(delay)');
+    expect(stripStructureSymbols('{L:= a<SDBH:b>}').text).toBe('{L:a<SDBH:b>}');
+    expect(stripStructureSymbols('人；► 物').text).toBe('人；物');
+  });
+
+  test('removes a doubled equals sign, and leaves no space after a direction mark', () => {
+    expect(stripStructureSymbols('== word').text).toBe('word');
+    expect(stripStructureSymbols('‎= a reference').text).toBe('‎a reference');
+  });
+
   test('leaves no space next to whitespace, closing punctuation, link markup or Chinese', () => {
     expect(stripStructureSymbols('bubo◄؛ x').text).toBe('bubo؛ x');
     expect(stripStructureSymbols('(►word)').text).toBe('(word)');

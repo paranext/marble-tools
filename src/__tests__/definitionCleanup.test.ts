@@ -4,6 +4,7 @@ import {
   findMalformedCrossReferences,
   LemmaIndexEntry,
   LinkedMeaningNumber,
+  rewriteOverlongBibleReferences,
   replaceMeaningLetters,
   rewriteCrossReferenceTargets,
   stripLeadingEquals,
@@ -314,10 +315,120 @@ const emptyReferenceCounts = {
   unresolved: 0,
 };
 
+describe('rewriteOverlongBibleReferences', () => {
+  test('rewrites a 17-digit run to a whole-verse reference', () => {
+    expect(rewriteOverlongBibleReferences('see {S:01300301900000000} here')).toEqual({
+      text: 'see {S:01300301900000} here',
+      rewritten: [{ original: '01300301900000000', rewritten: '01300301900000' }],
+      unresolved: [],
+    });
+  });
+
+  test('keeps only the verse of a run whose trailing digits are not zero', () => {
+    expect(rewriteOverlongBibleReferences('{S:00101903800100200}').text).toBe('{S:00101903800000}');
+  });
+
+  test('rewrites a run of any length over 14 digits', () => {
+    expect(rewriteOverlongBibleReferences('{S:0010190381234567}').text).toBe('{S:00101903800000}');
+    expect(rewriteOverlongBibleReferences('{S:001019038123456}').text).toBe('{S:00101903800000}');
+  });
+
+  test('leaves a valid 14-digit reference, a range and shorter runs untouched', () => {
+    const text = '{S:00101903800100} {S:00101903800100-00101903900200} {S:0010190380010}';
+    expect(rewriteOverlongBibleReferences(text)).toEqual({ text, rewritten: [], unresolved: [] });
+  });
+
+  test('leaves a run whose verse, chapter or book is not valid, and lists it', () => {
+    for (const run of [
+      '00101900000000000',
+      '00100003800000000',
+      '99901903800000000',
+      '00001903800000000',
+    ]) {
+      const text = `{S:${run}}`;
+      expect(rewriteOverlongBibleReferences(text)).toEqual({
+        text,
+        rewritten: [],
+        unresolved: [run],
+      });
+    }
+  });
+
+  test('rewrites only the over-long run of a multi-reference marker', () => {
+    expect(
+      rewriteOverlongBibleReferences('{S:00101903800100 01300301900000000-00201900100200}')
+    ).toEqual({
+      text: '{S:00101903800100 01300301900000-00201900100200}',
+      rewritten: [{ original: '01300301900000000', rewritten: '01300301900000' }],
+      unresolved: [],
+    });
+  });
+
+  test('rewrites each over-long run in a marker, and other markers in the text', () => {
+    const result = rewriteOverlongBibleReferences(
+      '{S:0010190380010020 00101903800100} {L:x<SDBH:y>} {S:00201900100200000}'
+    );
+    expect(result.text).toBe('{S:00101903800000 00101903800100} {L:x<SDBH:y>} {S:00201900100000}');
+    expect(result.rewritten).toHaveLength(2);
+  });
+
+  test('does not touch digit runs outside a {S:} marker', () => {
+    const text = 'number 01300301900000000 and {N:01300301900000000}';
+    expect(rewriteOverlongBibleReferences(text).text).toBe(text);
+  });
+});
+
 describe('cleanUpDefinitions', () => {
   function sense(id: string, definition: string) {
     return { id, definition };
   }
+
+  test('rewrites over-long Bible references in definitions and glosses and reports them', () => {
+    const entriesByLanguage = {
+      en: {
+        abc: {
+          id: 'entry-1',
+          senses: [
+            {
+              id: 's1',
+              definition: 'in {S:01300301900000000} and {S:00100000000000000}',
+              glosses: ['also {S:00101903800100200}', 'fine {S:00101903800100}'],
+            },
+          ],
+        },
+      },
+    };
+    const report = cleanUpDefinitions({
+      dictionaryId: 'SDBH',
+      entriesByLanguage,
+      sourceEntries: [],
+      baseFormMeaningCountBySenseId: new Map(),
+      meaningSenseIdsByEntryId: new Map(),
+    });
+    const [sense] = entriesByLanguage.en.abc.senses;
+    expect(sense.definition).toBe('in {S:01300301900000} and {S:00100000000000000}');
+    expect(sense.glosses).toEqual(['also {S:00101903800000}', 'fine {S:00101903800100}']);
+    expect(report.byLanguage.en.bibleReferences).toEqual({ rewritten: 2, unresolved: 1 });
+    expect(report.rewrittenBibleReferences).toEqual([
+      {
+        language: 'en',
+        field: 'definition',
+        entryId: 'entry-1',
+        original: '01300301900000000',
+        rewritten: '01300301900000',
+      },
+      {
+        language: 'en',
+        field: 'gloss',
+        entryId: 'entry-1',
+        original: '00101903800100200',
+        rewritten: '00101903800000',
+      },
+    ]);
+    expect(report.unresolvedBibleReferences).toEqual([
+      { language: 'en', field: 'definition', entryId: 'entry-1', original: '00100000000000000' },
+    ]);
+  });
 
   test('cleans every definition and reports what it did per language', () => {
     const lemmaA = `${ALEF}\u05b2${BET}`; // with hataf patah
@@ -383,6 +494,7 @@ describe('cleanUpDefinitions', () => {
       symbols: { '= ': 1, '► ': 1, '◄ ': 0, '≈ ': 0 },
       unspacedSymbols: noUnspaced,
       glossLeadingEquals: 0,
+      bibleReferences: { rewritten: 0, unresolved: 0 },
       meaningLetters: { ...noLetters, replaced: 1, singleMeaning: 1 },
     });
     expect(report.excludedByDesign).toEqual([

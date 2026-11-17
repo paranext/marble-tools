@@ -26,7 +26,12 @@
  * `=` usually means "that is". Paratext 9 strips the structure symbols from glosses as well; this
  * converter deliberately does not. The one exception is a gloss that starts with `=` (the
  * definition marker): that `=` and the spaces after it are removed.
+ *
+ * In definitions and glosses, a digit run longer than 14 digits inside a `{S:...}` marker is
+ * rewritten to a whole-verse reference, because the Dictionary panel reads only 14-digit references.
  */
+
+import { bookMap } from './helpers';
 
 /**
  * A cross-reference to another entry: `{L:display text<DICTIONARY:target>}`. The same pattern as the
@@ -264,6 +269,55 @@ export function stripLeadingEquals(gloss: string): string {
   return gloss.replace(/^=\s*/, '');
 }
 
+/** A `{S:...}` Bible reference marker, with its content */
+const BIBLE_REFERENCE_MARKER_REGEX = /\{S:([^}]*)\}/g;
+
+/** A digit run too long to be one `BBBCCCVVVWWWWW` reference */
+const OVERLONG_RUN_REGEX = /\d{15,}/g;
+
+/** One whole-verse reference: book, chapter and verse, then the word position `00000` */
+const WORD_POSITION_NONE = '00000';
+
+/** An over-long digit run in a `{S:...}` marker and what it was rewritten to */
+export interface RewrittenBibleReference {
+  original: string;
+  rewritten: string;
+}
+
+/**
+ * Rewrites each digit run longer than 14 digits inside a `{S:...}` marker to a whole-verse
+ * reference: the first 9 digits (book, chapter, verse) followed by `00000`, so the verse is kept
+ * and the word position, which the long run does not hold sensibly, is dropped. A run whose first 9
+ * digits are not a valid book (one the converter knows), chapter (1 or more) and verse (1 or more)
+ * is left unchanged and returned in `unresolved`. Everything else in the marker, and all other text,
+ * is kept.
+ */
+export function rewriteOverlongBibleReferences(text: string): {
+  text: string;
+  rewritten: RewrittenBibleReference[];
+  unresolved: string[];
+} {
+  const rewritten: RewrittenBibleReference[] = [];
+  const unresolved: string[] = [];
+  const result = text.replace(BIBLE_REFERENCE_MARKER_REGEX, marker =>
+    marker.replace(OVERLONG_RUN_REGEX, run => {
+      const verse = run.slice(0, 9);
+      const isValid =
+        bookMap[verse.slice(0, 3)] !== undefined &&
+        Number(verse.slice(3, 6)) >= 1 &&
+        Number(verse.slice(6, 9)) >= 1;
+      if (!isValid) {
+        unresolved.push(run);
+        return run;
+      }
+      const whole = `${verse}${WORD_POSITION_NONE}`;
+      rewritten.push({ original: run, rewritten: whole });
+      return whole;
+    })
+  );
+  return { text: result, rewritten, unresolved };
+}
+
 export interface MeaningLetterCounts {
   /** Letters not after a link that were replaced by a number */
   replaced: number;
@@ -468,7 +522,22 @@ export interface LanguageCleanupCounts {
   unspacedSymbols: Record<UnspacedSymbol, number>;
   /** Glosses that started with `=` */
   glossLeadingEquals: number;
+  /** Over-long digit runs in `{S:...}` markers of definitions and glosses */
+  bibleReferences: { rewritten: number; unresolved: number };
   meaningLetters: MeaningLetterCounts;
+}
+
+/** An over-long `{S:...}` digit run, per language and entry */
+export interface BibleReferenceProblem {
+  language: string;
+  field: 'definition' | 'gloss';
+  entryId: string;
+  original: string;
+}
+
+/** An over-long `{S:...}` digit run that was rewritten */
+export interface RewrittenBibleReferenceEntry extends BibleReferenceProblem {
+  rewritten: string;
 }
 
 export interface DefinitionCleanupReport {
@@ -479,6 +548,10 @@ export interface DefinitionCleanupReport {
   excludedByDesign: CrossReferenceProblem[];
   /** `{L:` markers in definitions that are not cross-references; the text is left unchanged */
   malformed: MalformedCrossReference[];
+  /** Over-long `{S:...}` digit runs that were rewritten to whole-verse references */
+  rewrittenBibleReferences: RewrittenBibleReferenceEntry[];
+  /** Over-long `{S:...}` digit runs that were left unchanged */
+  unresolvedBibleReferences: BibleReferenceProblem[];
 }
 
 function emptyCrossReferenceCounts(): CrossReferenceCounts {
@@ -505,6 +578,7 @@ function emptyCounts(): LanguageCleanupCounts {
     symbols: { '= ': 0, '► ': 0, '◄ ': 0, '≈ ': 0 },
     unspacedSymbols: { '=': 0, '►': 0, '◄': 0, '≈': 0 },
     glossLeadingEquals: 0,
+    bibleReferences: { rewritten: 0, unresolved: 0 },
     meaningLetters: {
       replaced: 0,
       singleMeaning: 0,
@@ -542,6 +616,8 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
   const unresolved = new Map<string, CrossReferenceProblem>();
   const excludedByDesign = new Map<string, CrossReferenceProblem>();
   const malformed = new Map<string, MalformedCrossReference>();
+  const rewrittenBibleReferences: RewrittenBibleReferenceEntry[] = [];
+  const unresolvedBibleReferences: BibleReferenceProblem[] = [];
 
   const addProblem = (
     list: Map<string, CrossReferenceProblem>,
@@ -641,6 +717,26 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
         return number === -1 ? 'noMeaning' : number + 1;
       };
 
+      // Rewrites over-long Bible references in a definition or gloss and records them
+      const fixBibleReferences = (text: string, field: BibleReferenceProblem['field']): string => {
+        const result = rewriteOverlongBibleReferences(text);
+        for (const { original, rewritten } of result.rewritten) {
+          counts.bibleReferences.rewritten++;
+          rewrittenBibleReferences.push({
+            language,
+            field,
+            entryId: entry.id,
+            original,
+            rewritten,
+          });
+        }
+        for (const original of result.unresolved) {
+          counts.bibleReferences.unresolved++;
+          unresolvedBibleReferences.push({ language, field, entryId: entry.id, original });
+        }
+        return result.text;
+      };
+
       for (const sense of entry.senses) {
         for (const excerpt of findMalformedCrossReferences(sense.definition)) {
           counts.malformedCrossReferences++;
@@ -664,12 +760,18 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
         for (const key of Object.keys(counts.meaningLetters) as (keyof MeaningLetterCounts)[])
           counts.meaningLetters[key] += lettered[key];
 
-        sense.definition = rewriteCrossReferenceTargets(lettered.text, resolveInDefinition);
+        sense.definition = fixBibleReferences(
+          rewriteCrossReferenceTargets(lettered.text, resolveInDefinition),
+          'definition'
+        );
         if (sense.glosses)
           sense.glosses = sense.glosses.map(gloss => {
             const withoutEquals = stripLeadingEquals(gloss);
             if (withoutEquals !== gloss) counts.glossLeadingEquals++;
-            return rewriteCrossReferenceTargets(withoutEquals, resolveInGloss);
+            return fixBibleReferences(
+              rewriteCrossReferenceTargets(withoutEquals, resolveInGloss),
+              'gloss'
+            );
           });
       }
     }
@@ -680,5 +782,7 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
     unresolved: Array.from(unresolved.values()),
     excludedByDesign: Array.from(excludedByDesign.values()),
     malformed: Array.from(malformed.values()),
+    rewrittenBibleReferences,
+    unresolvedBibleReferences,
   };
 }

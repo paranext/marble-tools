@@ -968,6 +968,7 @@ function printDefinitionCleanupReport(report: DefinitionCleanupReport): void {
       symbols,
       unspacedSymbols,
       glossLeadingEquals,
+      bibleReferences,
       meaningLetters: letters,
     } = counts;
     const left = (r: CrossReferenceCounts): string =>
@@ -991,6 +992,10 @@ function printDefinitionCleanupReport(report: DefinitionCleanupReport): void {
         UNSPACED_SYMBOLS.map(symbol => `"${symbol}" ${unspacedSymbols[symbol]}`).join(', ')
     );
     console.log(`    glosses with a leading "=" removed: ${glossLeadingEquals}`);
+    console.log(
+      `    over-long {S: digit runs (definitions and glosses): rewritten to a whole verse ` +
+        `${bibleReferences.rewritten}, left unchanged ${bibleReferences.unresolved}`
+    );
     console.log(
       `    meaning letters: ${letters.replaced} numbered; left: base form with one meaning ` +
         `${letters.singleMeaning}, beyond the base form's meanings ${letters.outOfRange}`
@@ -1017,6 +1022,26 @@ function printDefinitionCleanupReport(report: DefinitionCleanupReport): void {
       console.warn(
         `  ${problem.dictionaryId}:${problem.target}  ${problem.language}  ${problem.field}  ` +
           `${problem.entryId.replace(ENTRY_PREFIX, '')}  x${problem.count}  (${problem.reason})`
+      );
+  }
+
+  if (report.rewrittenBibleReferences.length > 0) {
+    console.warn(
+      `Over-long {S: digit runs rewritten to whole-verse references (${report.rewrittenBibleReferences.length}; language, field, entry Id, original -> rewritten):`
+    );
+    for (const item of report.rewrittenBibleReferences)
+      console.warn(
+        `  ${item.language}  ${item.field}  ${item.entryId.replace(ENTRY_PREFIX, '')}  ` +
+          `${item.original} -> ${item.rewritten}`
+      );
+  }
+  if (report.unresolvedBibleReferences.length > 0) {
+    console.warn(
+      `Over-long {S: digit runs left unchanged because the book, chapter or verse is not valid (${report.unresolvedBibleReferences.length}; language, field, entry Id, run):`
+    );
+    for (const item of report.unresolvedBibleReferences)
+      console.warn(
+        `  ${item.language}  ${item.field}  ${item.entryId.replace(ENTRY_PREFIX, '')}  ${item.original}`
       );
   }
 

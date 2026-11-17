@@ -265,9 +265,10 @@ function processLexiconFiles(
   const files = fs.readdirSync(inputDir).filter(filename => {
     return /^\w{4}-\d{2}\.xml$/i.test(filename);
   });
+  if (files.length === 0)
+    throw new Error(`No lexicon files (such as SDBH-01.XML) found in ${inputDir}`);
 
   let fileCount = 0;
-  let successCount = 0;
   const stats: LexiconPassStats = {
     conReferencesMissingFromLex: 0,
     skippedLexReferences: { odd: 0, wordZero: [], notLinked: 0 },
@@ -279,7 +280,6 @@ function processLexiconFiles(
     const filePath = path.join(inputDir, filename);
     try {
       processFile(filePath, entriesByLanguage, dictionaryType, definitionSources, stats);
-      successCount++;
       if (fileCount % 10 === 0) {
         console.log(`Processed ${fileCount} files...`);
       }
@@ -291,7 +291,7 @@ function processLexiconFiles(
     }
   }
 
-  console.log(`Successfully processed ${successCount} out of ${fileCount} files.`);
+  console.log(`Processed ${fileCount} files.`);
   console.log(
     `CONReferences missing from their lexical meaning's LEXReferences: ${stats.conReferencesMissingFromLex}`
   );

@@ -53,11 +53,20 @@ jobs:
         run: python3 scripts/verify_english_db.py --db english.db --lexicon ../marble-lexicon --previous-db previous-db/lexical.db
 
       - name: Upload English database
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: english-database
           path: english.db
+          retention-days: 90
+
+      # A database that failed a step is kept for investigation under a name that says so
+      - name: Upload unverified English database
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: english-database-unverified
+          path: english.db
+          if-no-files-found: ignore
           retention-days: 90
 
       - name: Upload XML files

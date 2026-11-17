@@ -80,8 +80,9 @@ describe('convert-marble-lexicon', () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  function convert(dictionaryType: 'SDBG' | 'SDBH', options: FixtureOptions) {
-    fs.writeFileSync(path.join(inputDir, `${dictionaryType}-01.XML`), lexiconFile(options));
+  function convert(dictionaryType: 'SDBG' | 'SDBH', options: FixtureOptions | undefined) {
+    if (options)
+      fs.writeFileSync(path.join(inputDir, `${dictionaryType}-01.XML`), lexiconFile(options));
     return spawnSync(
       path.join(repoRoot, 'node_modules/.bin/ts-node'),
       [
@@ -108,6 +109,15 @@ describe('convert-marble-lexicon', () => {
       entryIds: ['000001'],
       occurrences: ['LUK 1:1!1'],
     });
+  }, 60000);
+
+  test('fails and names the directory when it holds no lexicon files', () => {
+    const result = convert('SDBG', undefined);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('No lexicon files');
+    expect(result.stderr).toContain(inputDir);
+    expect(fs.existsSync(path.join(outputDir, 'lexicon_en.xml'))).toBe(false);
   }, 60000);
 
   test('fails and names the reference, entry and file for an invalid LEXReference', () => {

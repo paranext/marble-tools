@@ -291,6 +291,74 @@ class CheckSensesAndOccurrencesTests(unittest.TestCase):
 
         self.assertEqual(failures, [])
 
+    def write_sdbh(self, entries):
+        write_lexicon(
+            self.lexicon,
+            'SDBG',
+            [lexicon_entry(1, [('000001001001000', 'IsBiblicalTerm="Y"', [LUKE_1_1_WORD_1], 'g')])],
+        )
+        write_lexicon(self.lexicon, 'SDBH', entries)
+
+    HEBREW_SENSE = ('000002', '000002001001000', [LUKE_1_1_WORD_1_POSITION])
+
+    def test_leaves_out_an_sdbh_entry_below_version_3(self):
+        self.write_sdbh(
+            [
+                lexicon_entry(2, [('000002001001000', 'IsBiblicalTerm="Y"', [LUKE_1_1_WORD_1], 'h')]),
+                lexicon_entry(
+                    3, [('000003001001000', 'IsBiblicalTerm="Y"', [LUKE_1_1_WORD_1], 'h')], version=2
+                ),
+            ]
+        )
+
+        failures = self.check(
+            {
+                'SDBG': [self.GREEK_SENSE],
+                'SDBH': [self.HEBREW_SENSE, ('000003', '000003001001000', [LUKE_1_1_WORD_1_POSITION])],
+            }
+        )
+
+        self.assertTrue(any('rules exclude' in f and '000003001001000' in f for f in failures))
+        self.assertTrue(any('unexpected entries' in f and '000003' in f for f in failures))
+
+    def test_leaves_out_a_sense_with_no_definition_and_no_glosses(self):
+        self.write_sdbh(
+            [
+                lexicon_entry(
+                    2,
+                    [
+                        ('000002001001000', 'IsBiblicalTerm="Y"', [LUKE_1_1_WORD_1], 'h'),
+                        ('000002001002000', 'IsBiblicalTerm="Y"', [LUKE_1_1_WORD_1], ''),
+                    ],
+                )
+            ]
+        )
+
+        self.assertEqual(self.check({'SDBG': [self.GREEK_SENSE], 'SDBH': [self.HEBREW_SENSE]}), [])
+
+    def test_fails_on_a_sense_id_that_does_not_end_in_000(self):
+        self.write_sdbh(
+            [lexicon_entry(2, [('000002001001000', 'IsBiblicalTerm="Y"', [LUKE_1_1_WORD_1], 'h')])]
+        )
+
+        failures = self.check(
+            {
+                'SDBG': [self.GREEK_SENSE],
+                'SDBH': [self.HEBREW_SENSE, ('000002', '000002001001001', [])],
+            }
+        )
+
+        self.assertTrue(any('do not end in 000' in f and '000002001001001' in f for f in failures))
+
+    def test_fails_when_an_expected_entry_is_missing(self):
+        self.write_sdbh(
+            [lexicon_entry(2, [('000002001001000', 'IsBiblicalTerm="Y"', [LUKE_1_1_WORD_1], 'h')])]
+        )
+
+        failures = self.check({'SDBG': [self.GREEK_SENSE], 'SDBH': []})
+
+        self.assertTrue(any('expected entries missing' in f and '000002' in f for f in failures))
+
     def test_fails_when_the_lexicon_yields_no_senses(self):
         # A wrong --lexicon path must not pass as an empty match of an empty database
         failures = self.check({'SDBG': [], 'SDBH': []})

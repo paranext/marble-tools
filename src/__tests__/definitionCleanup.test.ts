@@ -176,9 +176,9 @@ describe('stripStructureSymbols', () => {
     });
   });
 
-  test('removes every ►, ◄ and ≈ whatever follows it, and leaves the text around it', () => {
+  test('removes every ►, ◄ and ≈ whatever follows it, keeping the words around it apart', () => {
     expect(stripStructureSymbols('a; ►b ◄c≈d ►')).toEqual({
-      text: 'a; b cd',
+      text: 'a; b c d',
       counts: { '= ': 0, '► ': 0, '◄ ': 0, '≈ ': 0 },
       unspaced: { '=': 0, '►': 2, '◄': 1, '≈': 1 },
     });
@@ -205,12 +205,36 @@ describe('stripStructureSymbols', () => {
   test('trims the result', () => {
     expect(stripStructureSymbols('text ≈ ').text).toBe('text');
   });
+
+  test('leaves a space where a symbol without its space stood between two words', () => {
+    expect(stripStructureSymbols('= um homem◄filho de').text).toBe('um homem filho de');
+    expect(stripStructureSymbols('= um homem;◄filho de').text).toBe('um homem; filho de');
+    expect(stripStructureSymbols('संपर्क,►जिसके').text).toBe('संपर्क, जिसके');
+    expect(stripStructureSymbols('x►{L:a<SDBH:b>}').text).toBe('x {L:a<SDBH:b>}');
+  });
+
+  test('leaves no space next to whitespace, closing punctuation, link markup or Chinese', () => {
+    expect(stripStructureSymbols('bubo◄؛ x').text).toBe('bubo؛ x');
+    expect(stripStructureSymbols('(►word)').text).toBe('(word)');
+    expect(stripStructureSymbols('{L:◄word<SDBH:w>}').text).toBe('{L:word<SDBH:w>}');
+    expect(stripStructureSymbols('河谷≈是').text).toBe('河谷是');
+    expect(stripStructureSymbols('男性；►{L:波斯<SDBH:p>}').text).toBe('男性；{L:波斯<SDBH:p>}');
+  });
+
+  test('removes a full-width equals sign at the start or after whitespace, ： or ；', () => {
+    expect(stripStructureSymbols('＝核桃树；因此：＝行动 a＝b')).toEqual({
+      text: '核桃树；因此：行动 a＝b',
+      counts: { '= ': 0, '► ': 0, '◄ ': 0, '≈ ': 0 },
+      unspaced: { ...noUnspaced, '=': 2 },
+    });
+  });
 });
 
 describe('stripLeadingEquals', () => {
   test('removes a leading equals sign and the spaces after it', () => {
     expect(stripLeadingEquals('= to speak much')).toBe('to speak much');
     expect(stripLeadingEquals('=word')).toBe('word');
+    expect(stripLeadingEquals('＝ 词')).toBe('词');
   });
 
   test('keeps every other equals sign, and all other text, as it is', () => {

@@ -6,7 +6,8 @@
  * - The structure symbols `= `, `► `, `◄ ` and `≈ ` (each followed by a space) are removed. Beyond
  *   Paratext 9, every remaining `►`, `◄` and `≈`, and an `=` that starts the definition or follows
  *   whitespace and is directly followed by a non-space, are removed too, because the source
- *   sometimes omits the space after a structure symbol.
+ *   sometimes omits the space after a structure symbol. So is the full-width `＝` that the Chinese
+ *   definitions use as their definition marker.
  * - Each cross-reference target `{L:text<DICTIONARY:lemma>}` is rewritten to the exact lemma of the
  *   entry it means, because the Dictionary panel looks the target up by exact lemma.
  * - `[a]`, `[b]`, … (a meaning, by position) become `(1)`, `(2)`, …:
@@ -216,8 +217,40 @@ export function findMalformedCrossReferences(text: string): string[] {
 export const UNSPACED_SYMBOLS = ['=', '►', '◄', '≈'] as const;
 export type UnspacedSymbol = (typeof UNSPACED_SYMBOLS)[number];
 
-/** Skips cross-reference markup, or finds an `=` that starts the text or follows whitespace */
-const UNSPACED_EQUALS_REGEX = /\{L:[^}]*\}|(^|\s)=(?=\S)/g;
+/**
+ * Skips cross-reference markup, or finds an `=` that starts the text or follows whitespace, or a
+ * full-width `＝` that starts the text or follows whitespace, `：` or `；`
+ */
+const UNSPACED_EQUALS_REGEX = /\{L:[^}]*\}|(^|\s)=(?=\S)|(^|\s|[：；])＝/g;
+
+/** A run of the arrow and approximation symbols */
+const ARROW_SYMBOLS_REGEX = /[►◄≈]+/g;
+
+/** Scripts written without spaces between words, and the full-width and CJK punctuation */
+const NO_SPACE_SCRIPT_REGEX =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u3000-\u303F\uFF00-\uFFEF]/u;
+
+/** A character after which a removed symbol leaves no space: an opening bracket or quote */
+const OPENER_REGEX = /[({[“‘«"']/;
+
+/** A character before which a removed symbol leaves a space: a letter, digit or opening bracket */
+const WORD_START_REGEX = /[\p{L}\p{M}\p{N}({[“‘«"']/u;
+
+/**
+ * What replaces an arrow or approximation symbol written without its space: a space when it stands
+ * between a word (or punctuation such as `;`) and the next word, so the two are not joined, and
+ * nothing otherwise (at either end, next to whitespace, before closing punctuation, inside
+ * `{L:` markup, or in scripts written without spaces).
+ */
+function arrowReplacement(before: string, after: string): string {
+  const previous = before.at(-1);
+  const next = after.at(0);
+  if (previous === undefined || next === undefined) return '';
+  if (/\s/.test(previous) || OPENER_REGEX.test(previous) || /\{[A-Z]:$/.test(before)) return '';
+  if (!WORD_START_REGEX.test(next)) return '';
+  if (NO_SPACE_SCRIPT_REGEX.test(previous) || NO_SPACE_SCRIPT_REGEX.test(next)) return '';
+  return ' ';
+}
 
 /**
  * Removes the structure symbols from a definition:
@@ -225,13 +258,15 @@ const UNSPACED_EQUALS_REGEX = /\{L:[^}]*\}|(^|\s)=(?=\S)/g;
  * 1. Every symbol followed by a space (`= `, `► `, `◄ `, `≈ `), as Paratext 9 does, one symbol
  *    after the other.
  * 2. Every `►`, `◄` and `≈` that remains, whatever follows it. The source sometimes omits the space
- *    after one.
+ *    after one. Where the symbol stood between two words it is replaced by a space, so they are not
+ *    joined (see `arrowReplacement`).
  * 3. Every `=` that starts the text or follows whitespace and is directly followed by a non-space
  *    character, for the same reason. An `=` anywhere else (inside a word, inside cross-reference
- *    markup, or with nothing after it) is kept.
+ *    markup, or with nothing after it) is kept. A full-width `＝` is removed where it starts the text
+ *    or follows whitespace, `：` or `；`, and is counted with the `=`.
  *
- * Only the symbol is removed; the text around it is left as it is. The result is trimmed. Line
- * breaks (`|`) are left alone.
+ * Otherwise only the symbol is removed; the text around it is left as it is. The result is trimmed.
+ * Line breaks (`|`) are left alone.
  */
 export function stripStructureSymbols(text: string): {
   text: string;
@@ -248,25 +283,28 @@ export function stripStructureSymbols(text: string): {
     counts[symbol] = parts.length - 1;
     result = parts.join('');
   }
-  for (const symbol of ['►', '◄', '≈'] as const) {
-    const parts = result.split(symbol);
-    unspaced[symbol] = parts.length - 1;
-    result = parts.join('');
-  }
-  result = result.replace(UNSPACED_EQUALS_REGEX, (match, space: string | undefined) => {
-    if (space === undefined) return match;
-    unspaced['=']++;
-    return space;
+  result = result.replace(ARROW_SYMBOLS_REGEX, (run: string, offset: number, whole: string) => {
+    for (const symbol of run) unspaced[symbol as '►' | '◄' | '≈']++;
+    return arrowReplacement(whole.slice(0, offset), whole.slice(offset + run.length));
   });
+  result = result.replace(
+    UNSPACED_EQUALS_REGEX,
+    (match, space: string | undefined, fullWidthPrefix: string | undefined) => {
+      const kept = space ?? fullWidthPrefix;
+      if (kept === undefined) return match;
+      unspaced['=']++;
+      return kept;
+    }
+  );
   return { text: result.trim(), counts, unspaced };
 }
 
 /**
- * Removes a leading `=` and the spaces after it from a gloss, which sometimes starts with the
- * definition marker. Any other `=` stays: inside a gloss it usually means "that is".
+ * Removes a leading `=` (or full-width `＝`) and the spaces after it from a gloss, which sometimes
+ * starts with the definition marker. Any other `=` stays: inside a gloss it usually means "that is".
  */
 export function stripLeadingEquals(gloss: string): string {
-  return gloss.replace(/^=\s*/, '');
+  return gloss.replace(/^[=＝]\s*/, '');
 }
 
 /** A `{S:...}` Bible reference marker, with its content */

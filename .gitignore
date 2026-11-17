@@ -8,3 +8,6 @@ dist
 # Files
 english.db
 lexicon.db
+
+# Python
+__pycache__

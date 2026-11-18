@@ -21,14 +21,23 @@ Rules (per dictionary, English only):
 
 Checks:
 1. Senses: the database's sense IDs equal the expected set, all end in 000, and its entry IDs match.
+   Each sense belongs to the entry whose number is the first 6 digits of its ID, and each entry's
+   Lemma is the lexicon's Lemma.
 2. Occurrences: each sense's occurrences equal the expected set.
 3. Totals against a previous database (--previous-db): entries, lexical senses and distinct word
-   positions may not drop by more than MAX_DROP_FRACTION.
+   positions may not drop by more than MAX_DROP_FRACTION. Only lexical (ending in 000) senses are
+   compared because the published database still contains contextual senses. If a drop over the
+   threshold is expected, raise MAX_DROP_FRACTION in the pull request that causes it.
 4. Links oracle (--links): informational comparison with the published MARBLELinks lexical links.
+5. Definition text: invariants of the cleaned-up definitions, checked on the database rather than by
+   repeating the clean-up. No definition contains a structure symbol (►, ◄ or ≈); every
+   {S: marker holds a 14-digit reference; a definition has as many {L: markers as its source
+   definition; and a definition or gloss that was not empty in the source is not empty in the
+   database.
 
 Usage: python3 scripts/verify_english_db.py --db english.db --lexicon ../marble-lexicon
            [--links ../marble-indexes/Full] [--previous-db path]
-Exits non-zero when any of checks 1-3 fails.
+Exits non-zero when any of checks 1-3 or 5 fails.
 """
 import argparse
 import collections
@@ -45,6 +54,8 @@ MAX_DROP_FRACTION = 0.02
 DICTIONARIES = ('SDBG', 'SDBH')
 MIN_SDBH_ENTRY_VERSION = 3
 LANGUAGE = 'en'
+# Symbols the definition clean-up removes; none may remain in a definition
+STRUCTURE_SYMBOLS = ('\u25ba', '\u25c4', '\u2248')
 # How many offending items each failed check lists
 SAMPLE_SIZE = 8
 
@@ -90,12 +101,24 @@ def occurrences_of(references):
     return result
 
 
+def source_text_of(english_senses):
+    """(definition, glosses) of the first English LEXSense that has content, as written in the XML"""
+    lex_sense = next((s for s in english_senses if has_content(s)), english_senses[0])
+    definition = text_of(lex_sense.find('.//DefinitionShort'))
+    glosses = lex_sense.find('.//Glosses')
+    return definition, [g for g in (text_of(g) for g in glosses.iter('Gloss')) if g] if glosses is not None else []
+
+
 def expected_from_lexicon(lexicon_root, name):
-    """Returns (senses, entry_ids, stats): senses maps sense ID -> set of occurrences."""
+    """Returns (senses, entry_lemmas, stats, texts).
+
+    senses maps sense ID -> set of occurrences; entry_lemmas maps entry ID -> Lemma; texts maps
+    sense ID -> (source definition, [source glosses])."""
     senses = {}
     stats = collections.Counter()
     # Entries that lose all their senses are not in the database
-    entry_ids = set()
+    entry_lemmas = {}
+    texts = {}
     for path in lexicon_files(lexicon_root, name):
         for entry in ET.parse(path).getroot().iter('Lexicon_Entry'):
             entry_id = (entry.get('Id') or '')[:6]
@@ -133,8 +156,17 @@ def expected_from_lexicon(lexicon_root, name):
                         for r in meaning.findall('LEXReferences/LEXReference')
                     ]
                     senses[sense_id] = occurrences_of(references)
-                entry_ids.add(entry_id)
-    return senses, entry_ids, stats
+                entry_lemmas[entry_id] = entry.get('Lemma') or ''
+                texts[sense_id] = source_text_of(english)
+    return senses, entry_lemmas, stats, texts
+
+
+# The joins and filter that select one dictionary's English senses (bind name and LANGUAGE),
+# to follow `FROM Senses s` and any further joins of the query
+ENGLISH_SENSES_OF = '''JOIN Entries e ON e.EntryKey = s.EntryKey
+               JOIN LexicalReferenceTexts l ON l.LexicalReferenceTextKey = e.LexicalReferenceTextKey
+               JOIN Languages lang ON lang.LanguageKey = s.LanguageKey'''
+ENGLISH_SENSES_WHERE = 'WHERE l.Id = ? AND lang.BCP47Code = ?'
 
 
 def load_database(db_path, name):
@@ -144,11 +176,7 @@ def load_database(db_path, name):
         senses = {}
         entry_ids = set()
         for entry_id, sense_id in db.execute(
-            '''SELECT e.Id, s.Id FROM Senses s
-               JOIN Entries e ON e.EntryKey = s.EntryKey
-               JOIN LexicalReferenceTexts l ON l.LexicalReferenceTextKey = e.LexicalReferenceTextKey
-               JOIN Languages lang ON lang.LanguageKey = s.LanguageKey
-               WHERE l.Id = ? AND lang.BCP47Code = ?''',
+            f'SELECT e.Id, s.Id FROM Senses s {ENGLISH_SENSES_OF} {ENGLISH_SENSES_WHERE}',
             (name, LANGUAGE),
         ):
             if sense_id in senses:
@@ -156,17 +184,38 @@ def load_database(db_path, name):
             senses[sense_id] = set()
             entry_ids.add(entry_id)
         for sense_id, book, chapter, verse, word in db.execute(
-            '''SELECT s.Id, o.BookNum, o.ChapterNum, o.VerseNum, o.WordNum
+            f'''SELECT s.Id, o.BookNum, o.ChapterNum, o.VerseNum, o.WordNum
                FROM SenseOccurrences o
                JOIN Senses s ON s.SenseKey = o.SenseKey
-               JOIN Entries e ON e.EntryKey = s.EntryKey
-               JOIN LexicalReferenceTexts l ON l.LexicalReferenceTextKey = e.LexicalReferenceTextKey
-               JOIN Languages lang ON lang.LanguageKey = s.LanguageKey
-               WHERE l.Id = ? AND lang.BCP47Code = ?''',
+               {ENGLISH_SENSES_OF} {ENGLISH_SENSES_WHERE}''',
             (name, LANGUAGE),
         ):
             senses[sense_id].add((book, chapter, verse, word))
         return senses, entry_ids
+    finally:
+        db.close()
+
+
+def load_database_texts(db_path, name):
+    """Returns (entries, definitions): entries maps entry ID -> (Lemma, [sense IDs]);
+    definitions maps sense ID -> (definition, [glosses])."""
+    db = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+    try:
+        entries = {}
+        definitions = {}
+        for entry_id, lemma, sense_id, definition, gloss in db.execute(
+            f'''SELECT e.Id, e.Lemma, s.Id, s.Definition, g.Gloss FROM Senses s
+               LEFT JOIN Glosses g ON g.SenseKey = s.SenseKey
+               {ENGLISH_SENSES_OF} {ENGLISH_SENSES_WHERE}''',
+            (name, LANGUAGE),
+        ):
+            sense_ids = entries.setdefault(entry_id, (lemma, []))[1]
+            if sense_id not in sense_ids:
+                sense_ids.append(sense_id)
+            glosses = definitions.setdefault(sense_id, (definition or '', []))[1]
+            if gloss is not None:
+                glosses.append(gloss)
+        return entries, definitions
     finally:
         db.close()
 
@@ -193,8 +242,10 @@ def sample(items):
 def check_senses_and_occurrences(db_path, lexicon_root):
     failures = []
     for name in DICTIONARIES:
-        expected, expected_entries, stats = expected_from_lexicon(lexicon_root, name)
+        expected, expected_lemmas, stats, source_texts = expected_from_lexicon(lexicon_root, name)
+        expected_entries = set(expected_lemmas)
         actual, actual_entries = load_database(db_path, name)
+        entry_rows, definitions = load_database_texts(db_path, name)
 
         missing = set(expected) - set(actual)
         extra = set(actual) - set(expected)
@@ -217,6 +268,24 @@ def check_senses_and_occurrences(db_path, lexicon_root):
             problems.append(f'{len(entries_missing)} expected entries missing: {sample(entries_missing)}')
         if entries_extra:
             problems.append(f'{len(entries_extra)} unexpected entries: {sample(entries_extra)}')
+        misplaced = [
+            f'{sense_id} (entry {entry_id})'
+            for entry_id, (_, sense_ids) in entry_rows.items()
+            for sense_id in sense_ids
+            if sense_id[:6] != entry_id
+        ]
+        if misplaced:
+            problems.append(
+                f'{len(misplaced)} senses are attached to an entry other than the one their ID '
+                f'starts with: {sample(misplaced)}'
+            )
+        wrong_lemmas = [
+            f'{entry_id} ({lemma!r}, expected {expected_lemmas[entry_id]!r})'
+            for entry_id, (lemma, _) in entry_rows.items()
+            if entry_id in expected_lemmas and lemma != expected_lemmas[entry_id]
+        ]
+        if wrong_lemmas:
+            problems.append(f'{len(wrong_lemmas)} entries have the wrong Lemma: {sample(wrong_lemmas)}')
         print(
             f'[check 1 senses] {name}: expected {len(expected)} senses / {len(expected_entries)} entries, '
             f'database {len(actual)} / {len(actual_entries)}: {"FAIL" if problems else "ok"}'
@@ -248,6 +317,44 @@ def check_senses_and_occurrences(db_path, lexicon_root):
                 f'check 2 {name}: {len(wrong)} senses have the wrong occurrences, e.g. '
                 + sample([w[0] for w in wrong])
             )
+
+        failures += check_definition_text(name, definitions, source_texts)
+    return failures
+
+
+def check_definition_text(name, definitions, source_texts):
+    """Check 5. `definitions` maps sense ID -> (definition, [glosses]) in the database and
+    `source_texts` maps sense ID -> (definition, [glosses]) in the lexicon. Returns the failures."""
+    problems = {
+        'a structure symbol remains': [],
+        'a {S: marker does not hold exactly 14 digits': [],
+        'the number of {L: markers differs from the source': [],
+        'a definition that was not empty in the source is empty': [],
+        'glosses that were not empty in the source are all missing': [],
+    }
+    for sense_id, (definition, glosses) in definitions.items():
+        if any(symbol in definition for symbol in STRUCTURE_SYMBOLS):
+            problems['a structure symbol remains'].append(sense_id)
+        if any(len(digits) != 14 for digits in re.findall(r'\{S:(\d*)', definition)):
+            problems['a {S: marker does not hold exactly 14 digits'].append(sense_id)
+        if sense_id not in source_texts:
+            continue
+        source_definition, source_glosses = source_texts[sense_id]
+        if source_definition.count('{L:') != definition.count('{L:'):
+            problems['the number of {L: markers differs from the source'].append(sense_id)
+        if source_definition and not definition.strip():
+            problems['a definition that was not empty in the source is empty'].append(sense_id)
+        if source_glosses and not any(gloss.strip() for gloss in glosses):
+            problems['glosses that were not empty in the source are all missing'].append(sense_id)
+    failed = {text: ids for text, ids in problems.items() if ids}
+    print(
+        f'[check 5 definition text] {name}: {len(definitions)} definitions checked: '
+        f'{"FAIL" if failed else "ok"}'
+    )
+    failures = []
+    for text, ids in failed.items():
+        print(f'    {len(ids)} senses where {text}: {sample(ids)}')
+        failures.append(f'check 5 {name}: {len(ids)} senses where {text}, e.g. {sample(ids)}')
     return failures
 
 
@@ -275,7 +382,8 @@ def check_previous(db_path, previous_path):
             elif drop:
                 failures.append(
                     f'check 3 {name}: {metric} dropped from {old_value} to {new_value} '
-                    f'(more than {MAX_DROP_FRACTION:.0%})'
+                    f'(more than {MAX_DROP_FRACTION:.0%}); if the drop is expected, raise '
+                    f'MAX_DROP_FRACTION in the pull request that causes it'
                 )
     return failures
 

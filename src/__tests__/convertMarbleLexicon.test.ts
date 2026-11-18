@@ -5,7 +5,10 @@ import path from 'path';
 
 const repoRoot = path.resolve(__dirname, '../..');
 
-/** A contextual meaning (CONMeaning) of a lexical meaning, with its own references and sense */
+/**
+ * A `ContextualMeaning` (under `CONMeanings`) of a lexical meaning, with its own references
+ * and sense
+ */
 interface ContextualMeaningSpec {
   id: string;
   references?: string[];
@@ -18,6 +21,7 @@ interface MeaningSpec {
   attributes?: string;
   references?: string[];
   definition?: string;
+  glossless?: boolean;
   contextualMeanings?: ContextualMeaningSpec[];
 }
 
@@ -34,6 +38,8 @@ interface FixtureOptions {
   references?: string[];
   /** The English definition of the default meaning */
   definition?: string;
+  /** Leaves the default meaning's sense without glosses, so only its definition keeps it */
+  glossless?: boolean;
   /** Contextual meanings of the default meaning */
   contextualMeanings?: ContextualMeaningSpec[];
   /** The Lemma of a second entry (Id 000002000000000) to add to the file */
@@ -48,11 +54,16 @@ const referencesXml = (tag: string, container: string, references: string[]): st
   `<${container}>${references.map(ref => `<${tag}>${ref}</${tag}>`).join('')}</${container}>`;
 
 /** `kind` is `LEX` for a lexical meaning's senses and `CON` for a contextual meaning's */
-function senseXml(kind: 'LEX' | 'CON', attributes: string, definition: string): string {
+function senseXml(
+  kind: 'LEX' | 'CON',
+  attributes: string,
+  definition: string,
+  glossless = false
+): string {
   return `<${kind}Senses>
               <${kind}Sense ${attributes}>
                 <DefinitionShort>${definition}</DefinitionShort>
-                <Glosses><Gloss>a gloss</Gloss></Glosses>
+                <Glosses>${glossless ? '' : '<Gloss>a gloss</Gloss>'}</Glosses>
               </${kind}Sense>
             </${kind}Senses>`;
 }
@@ -68,7 +79,7 @@ function meaningXml(meaning: MeaningSpec, senseAttributes: string): string {
     .join('');
   return `<LEXMeaning ${meaning.attributes ?? ''}>
             ${referencesXml('LEXReference', 'LEXReferences', meaning.references ?? [])}
-            ${senseXml('LEX', senseAttributes, meaning.definition ?? 'a definition')}
+            ${senseXml('LEX', senseAttributes, meaning.definition ?? 'a definition', meaning.glossless)}
             <CONMeanings>${contextual}</CONMeanings>
           </LEXMeaning>`;
 }
@@ -81,6 +92,7 @@ function lexiconFile(options: FixtureOptions = {}): string {
     senseAttributes = 'LanguageCode="en"',
     references = ['04200100100002'],
     definition,
+    glossless,
     contextualMeanings,
     secondEntryLemma,
     baseForms,
@@ -116,6 +128,7 @@ function lexiconFile(options: FixtureOptions = {}): string {
         attributes: meaningAttributes,
         references,
         definition,
+        glossless,
         contextualMeanings,
       });
   const secondForms = secondEntryBaseForms
@@ -175,9 +188,11 @@ describe('convert-marble-lexicon', () => {
   function convert(dictionaryType: 'SDBG' | 'SDBH', options: FixtureOptions | undefined) {
     if (options)
       fs.writeFileSync(path.join(inputDir, `${dictionaryType}-01.XML`), lexiconFile(options));
-    return spawnSync(
-      path.join(repoRoot, 'node_modules/.bin/ts-node'),
+    // Run ts-node through node itself: the .bin shim cannot be spawned directly on Windows
+    const result = spawnSync(
+      process.execPath,
       [
+        require.resolve('ts-node/dist/bin.js'),
         '--transpile-only',
         'src/convert-marble-lexicon.ts',
         '--dictionary-type',
@@ -191,6 +206,9 @@ describe('convert-marble-lexicon', () => {
       ],
       { cwd: repoRoot, encoding: 'utf-8' }
     );
+    // A spawn failure (such as a missing executable) must not pass as a conversion failure
+    expect(result.error).toBeUndefined();
+    return result;
   }
 
   test('converts a valid entry', () => {
@@ -229,7 +247,7 @@ describe('convert-marble-lexicon', () => {
     expect(result.stderr).toContain('99900100100002');
   }, 60000);
 
-  test('still skips odd word IDs and word-0 references', () => {
+  test('skips odd word IDs and word-0 references', () => {
     const result = convert('SDBG', {
       references: ['04200100100002', '04200100100003', '04200100100000'],
     });
@@ -251,6 +269,8 @@ describe('convert-marble-lexicon', () => {
 
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain('SDBG-01.XML');
+      // The error is printed once, not again by the runtime with a stack trace
+      expect(result.stderr.match(/Error processing file/g)).toHaveLength(1);
     },
     60000
   );
@@ -268,6 +288,8 @@ describe('convert-marble-lexicon', () => {
     });
 
     expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('000001000000000');
+    expect(result.stderr).toContain('Version');
   }, 60000);
 
   test('leaves out an SDBH entry with a version below the minimum', () => {
@@ -455,6 +477,39 @@ describe('convert-marble-lexicon', () => {
 
       expect(result.status).toBe(0);
       expect(readDefinitions(outputDir)).toEqual(['a definition', 'see (2)', 'plain']);
+    }, 60000);
+
+    test('counts a meaning marked N when numbering a letter, so [b] can be the first output sense', () => {
+      const result = convert('SDBH', {
+        baseForms: [
+          {
+            id: '000001001000000',
+            meanings: [
+              { id: '000001001001000', attributes: 'IsBiblicalTerm="N"' },
+              { id: '000001001002000', attributes: 'IsBiblicalTerm="Y"' },
+              {
+                id: '000001001003000',
+                attributes: 'IsBiblicalTerm="Y"',
+                definition: 'see [b]',
+              },
+            ],
+          },
+        ],
+      });
+
+      expect(result.status).toBe(0);
+      // The meaning marked N is not output, but still counts as `[a]`, so `[b]` is the first
+      // output sense
+      expect(readDefinitions(outputDir)).toEqual(['a definition', 'see (1)']);
+    }, 60000);
+
+    test('fails when the clean-up leaves a sense with no definition and no glosses', () => {
+      const result = convert('SDBG', { definition: '&#x25C4;', glossless: true });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('000001001001000');
+      expect(result.stderr).toContain('no definition and no glosses');
+      expect(fs.existsSync(path.join(outputDir, 'lexicon_en.xml'))).toBe(false);
     }, 60000);
   });
 });

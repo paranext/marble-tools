@@ -481,14 +481,15 @@ export function occurrencesFromLexReferences(references: string[]): LexReference
       result.invalid.push(trimmed);
       continue;
     }
+    // An unknown book is a data error even when the word ID is odd, so it is checked first
+    if (!bookMap[id.substring(0, 3)]) {
+      result.unknownBook.push(id);
+      continue;
+    }
     // From Reinier: odd reference IDs refer to cases in the apparatus, which means that these words
     // are not in the text.
     if (!['0', '2', '4', '6', '8'].includes(id[13])) {
       result.odd.push(id);
-      continue;
-    }
-    if (!bookMap[id.substring(0, 3)]) {
-      result.unknownBook.push(id);
       continue;
     }
     if (id.substring(11) === '000') {

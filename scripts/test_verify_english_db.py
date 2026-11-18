@@ -56,19 +56,27 @@ def write_lexicon(root, name, entries):
         file.write(f'<Lexicon>{"".join(entries)}</Lexicon>')
 
 
-def create_database(path, senses_by_dictionary):
+def create_database(path, senses_by_dictionary, lemmas=None):
     """Creates just the tables and columns the script reads.
 
     senses_by_dictionary maps a dictionary name to a list of
-    (entry Id, sense Id, [(book, chapter, verse, word)]) in language 'en'.
+    (entry Id, sense Id, [(book, chapter, verse, word)]) in language 'en'. A sense may have a
+    fourth item, a dict with `definition` and `glosses`; by default its definition is the one
+    lexicon_entry gives the dictionary's meanings ('g' for SDBG, 'h' for SDBH) and it has no
+    glosses. lemmas maps an entry Id to its Lemma, which is otherwise the lexicon_entry one.
     """
+    lemmas = lemmas or {}
     db = sqlite3.connect(path)
     db.executescript(
         '''
         CREATE TABLE LexicalReferenceTexts (LexicalReferenceTextKey INTEGER PRIMARY KEY, Id TEXT);
         CREATE TABLE Languages (LanguageKey INTEGER PRIMARY KEY, BCP47Code TEXT);
-        CREATE TABLE Entries (EntryKey INTEGER PRIMARY KEY, Id TEXT, LexicalReferenceTextKey INTEGER);
-        CREATE TABLE Senses (SenseKey INTEGER PRIMARY KEY, Id TEXT, EntryKey INTEGER, LanguageKey INTEGER);
+        CREATE TABLE Entries (
+          EntryKey INTEGER PRIMARY KEY, Id TEXT, Lemma TEXT, LexicalReferenceTextKey INTEGER);
+        CREATE TABLE Senses (
+          SenseKey INTEGER PRIMARY KEY, Id TEXT, EntryKey INTEGER, LanguageKey INTEGER,
+          Definition TEXT);
+        CREATE TABLE Glosses (SenseKey INTEGER, Gloss TEXT);
         CREATE TABLE SenseOccurrences (
           SenseKey INTEGER, BookNum INTEGER, ChapterNum INTEGER, VerseNum INTEGER, WordNum INTEGER);
         INSERT INTO Languages VALUES (1, 'en');
@@ -77,16 +85,25 @@ def create_database(path, senses_by_dictionary):
     entry_keys = {}
     for text_key, (name, senses) in enumerate(senses_by_dictionary.items(), start=1):
         db.execute('INSERT INTO LexicalReferenceTexts VALUES (?, ?)', (text_key, name))
-        for entry_id, sense_id, occurrences in senses:
+        for entry_id, sense_id, occurrences, *text in senses:
+            text = text[0] if text else {}
             if (name, entry_id) not in entry_keys:
                 cursor = db.execute(
-                    'INSERT INTO Entries (Id, LexicalReferenceTextKey) VALUES (?, ?)',
-                    (entry_id, text_key),
+                    'INSERT INTO Entries (Id, Lemma, LexicalReferenceTextKey) VALUES (?, ?, ?)',
+                    (entry_id, lemmas.get(entry_id, f'lemma{int(entry_id)}'), text_key),
                 )
                 entry_keys[(name, entry_id)] = cursor.lastrowid
             cursor = db.execute(
-                'INSERT INTO Senses (Id, EntryKey, LanguageKey) VALUES (?, ?, 1)',
-                (sense_id, entry_keys[(name, entry_id)]),
+                'INSERT INTO Senses (Id, EntryKey, LanguageKey, Definition) VALUES (?, ?, 1, ?)',
+                (
+                    sense_id,
+                    entry_keys[(name, entry_id)],
+                    text.get('definition', 'g' if name == 'SDBG' else 'h'),
+                ),
+            )
+            db.executemany(
+                'INSERT INTO Glosses VALUES (?, ?)',
+                [(cursor.lastrowid, gloss) for gloss in text.get('glosses', [])],
             )
             db.executemany(
                 'INSERT INTO SenseOccurrences VALUES (?, ?, ?, ?, ?)',
@@ -209,8 +226,8 @@ class CheckSensesAndOccurrencesTests(unittest.TestCase):
         )
         write_lexicon(self.lexicon, 'SDBH', [lexicon_entry(2, sdbh_meanings, sdbh_version)])
 
-    def check(self, senses_by_dictionary):
-        create_database(self.db_path, senses_by_dictionary)
+    def check(self, senses_by_dictionary, lemmas=None):
+        create_database(self.db_path, senses_by_dictionary, lemmas)
         return quiet(verify.check_senses_and_occurrences, self.db_path, self.lexicon)
 
     GREEK_SENSE = ('000001', '000001001001000', [LUKE_1_1_WORD_1_POSITION])
@@ -359,11 +376,148 @@ class CheckSensesAndOccurrencesTests(unittest.TestCase):
 
         self.assertTrue(any('expected entries missing' in f and '000002' in f for f in failures))
 
+    def two_entry_lexicon(self):
+        """SDBG entries 1 and 2, each with one meaning, whose references and definitions differ"""
+        write_lexicon(
+            self.lexicon,
+            'SDBG',
+            [
+                lexicon_entry(1, [('000001001001000', 'IsBiblicalTerm="Y"', [LUKE_1_1_WORD_1], 'g')]),
+                lexicon_entry(2, [('000002001001000', 'IsBiblicalTerm="Y"', [LUKE_1_1_WORD_1], 'g')]),
+            ],
+        )
+        write_lexicon(
+            self.lexicon,
+            'SDBH',
+            [lexicon_entry(3, [('000003001001000', 'IsBiblicalTerm="Y"', [LUKE_1_1_WORD_1], 'h')])],
+        )
+
+    HEBREW_SENSE_3 = ('000003', '000003001001000', [LUKE_1_1_WORD_1_POSITION])
+
+    def test_fails_when_senses_are_attached_to_the_wrong_entries(self):
+        # The sense IDs and entry IDs are each the expected sets, but the senses are swapped
+        self.two_entry_lexicon()
+        position = [LUKE_1_1_WORD_1_POSITION]
+
+        failures = self.check(
+            {
+                'SDBG': [
+                    ('000001', '000002001001000', position),
+                    ('000002', '000001001001000', position),
+                ],
+                'SDBH': [self.HEBREW_SENSE_3],
+            }
+        )
+
+        self.assertTrue(
+            any(
+                'check 1 SDBG' in f
+                and 'attached to an entry other than' in f
+                and '000002001001000 (entry 000001)' in f
+                for f in failures
+            )
+        )
+        self.assertFalse(any('SDBH' in f for f in failures))
+
+    def test_fails_when_an_entry_has_the_wrong_lemma(self):
+        self.two_entry_lexicon()
+        position = [LUKE_1_1_WORD_1_POSITION]
+
+        failures = self.check(
+            {
+                'SDBG': [
+                    ('000001', '000001001001000', position),
+                    ('000002', '000002001001000', position),
+                ],
+                'SDBH': [self.HEBREW_SENSE_3],
+            },
+            lemmas={'000002': 'lemma1'},
+        )
+
+        self.assertTrue(
+            any('check 1 SDBG' in f and 'wrong Lemma' in f and "000002 ('lemma1'" in f for f in failures)
+        )
+
+    def test_fails_a_symbol_left_in_a_database_definition(self):
+        self.lexicon_with([('000002001001000', 'IsBiblicalTerm="Y"', [LUKE_1_1_WORD_1], 'h')])
+
+        failures = self.check(
+            {
+                'SDBG': [self.GREEK_SENSE],
+                'SDBH': [
+                    ('000002', '000002001001000', [LUKE_1_1_WORD_1_POSITION], {'definition': 'h \u25c4'})
+                ],
+            }
+        )
+
+        self.assertTrue(any('check 5 SDBH' in f and 'structure symbol' in f for f in failures))
+
+    def test_reads_the_source_definition_and_glosses(self):
+        self.lexicon_with([('000002001001000', 'IsBiblicalTerm="Y"', [LUKE_1_1_WORD_1], 'h {L:a&lt;SDBH:b&gt;}')])
+
+        failures = self.check(
+            {
+                'SDBG': [self.GREEK_SENSE],
+                'SDBH': [
+                    ('000002', '000002001001000', [LUKE_1_1_WORD_1_POSITION], {'definition': 'h'})
+                ],
+            }
+        )
+
+        self.assertTrue(any('check 5 SDBH' in f and '{L: markers differs' in f for f in failures))
+
     def test_fails_when_the_lexicon_yields_no_senses(self):
         # A wrong --lexicon path must not pass as an empty match of an empty database
         failures = self.check({'SDBG': [], 'SDBH': []})
 
         self.assertTrue(any('yield no senses' in f for f in failures))
+
+
+class DefinitionTextTests(unittest.TestCase):
+    """Check 5, on definitions and glosses given directly as (definition, [glosses])"""
+
+    def check(self, database, source):
+        return quiet(verify.check_definition_text, 'SDBH', database, source)
+
+    def test_passes_clean_text_that_matches_the_source(self):
+        text = ('see {L:x<SDBH:y>} and {S:04200100100002}', ['gloss'])
+
+        self.assertEqual(self.check({'a': text}, {'a': text}), [])
+
+    def test_fails_a_structure_symbol_in_a_definition(self):
+        for symbol in ('\u25ba', '\u25c4', '\u2248'):
+            with self.subTest(symbol=symbol):
+                failures = self.check({'a': (f'word {symbol}', ['g'])}, {'a': ('word', ['g'])})
+                self.assertTrue(any('structure symbol' in f and 'a' in f for f in failures))
+
+    def test_fails_an_s_marker_that_is_not_14_digits(self):
+        for marker in ('{S:0420010010000}', '{S:042001001000022}', '{S:}'):
+            with self.subTest(marker=marker):
+                failures = self.check({'a': (f'x {marker}', ['g'])}, {'a': ('x', ['g'])})
+                self.assertTrue(any('{S: marker' in f for f in failures))
+
+    def test_fails_when_the_number_of_l_markers_differs_from_the_source(self):
+        source = {'a': ('{L:x<SDBH:y>} {L:z<SDBH:w>}', ['g'])}
+
+        failures = self.check({'a': ('{L:x<SDBH:y>} z', ['g'])}, source)
+
+        self.assertTrue(any('{L: markers differs' in f for f in failures))
+
+    def test_fails_a_definition_that_is_empty_but_was_not_in_the_source(self):
+        failures = self.check({'a': ('', ['g'])}, {'a': ('text', ['g'])})
+
+        self.assertTrue(any('definition that was not empty' in f for f in failures))
+
+    def test_allows_an_empty_definition_that_was_empty_in_the_source(self):
+        self.assertEqual(self.check({'a': ('', ['g'])}, {'a': ('', ['g'])}), [])
+
+    def test_fails_when_every_gloss_is_missing_but_the_source_had_one(self):
+        failures = self.check({'a': ('text', [])}, {'a': ('text', ['g'])})
+
+        self.assertTrue(any('glosses that were not empty' in f for f in failures))
+
+    def test_allows_no_glosses_when_the_source_had_none(self):
+        self.assertEqual(self.check({'a': ('text', [])}, {'a': ('text', [])}), [])
 
 
 if __name__ == '__main__':

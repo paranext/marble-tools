@@ -286,8 +286,7 @@ function processLexiconFiles(
     } catch (e) {
       // A file that cannot be converted (for example one with a malformed ID) fails the whole
       // conversion rather than leaving its entries out of the output.
-      console.error(`Error processing file ${filePath}: ${e}`);
-      throw e;
+      throw new Error(`Error processing file ${filePath}: ${errorMessage(e)}`, { cause: e });
     }
   }
 
@@ -305,7 +304,7 @@ function processLexiconFiles(
         : '')
   );
   console.log(
-    `  of senses marked N or X (not linked to the text): ${skippedLexReferences.notLinked}`
+    `  of meanings marked N or X (not linked to the text): ${skippedLexReferences.notLinked}`
   );
 
   // An invalid reference or an unknown book is a data error, not a rule, so it fails the conversion
@@ -713,8 +712,9 @@ function processDomainFiles(
     try {
       processDomainFile(filePath, senseType, dictionaryType, taxonomiesByLanguage);
     } catch (e) {
-      console.error(`Error processing domain file ${filePath}: ${e}`);
-      throw e;
+      throw new Error(`Error processing domain file ${filePath}: ${errorMessage(e)}`, {
+        cause: e,
+      });
     }
   }
 
@@ -1267,6 +1267,34 @@ function formatXml(xml: string): string {
   return formatted.substring(1, formatted.length - 2);
 }
 
+/**
+ * The clean-up runs after the empty senses are removed, so a definition made only of symbols that
+ * it removes would leave a blank sense in the output. Fails the conversion for any sense that the
+ * removal would now have dropped (no definition and no glosses).
+ */
+function failOnSensesEmptiedByCleanup(entriesByLanguage: EntriesByLanguage): void {
+  const emptied: string[] = [];
+  for (const [language, entries] of Object.entries(entriesByLanguage)) {
+    for (const entry of Object.values(entries)) {
+      for (const sense of entry.senses) {
+        if (!sense.definition && sense.glosses.length === 0)
+          emptied.push(`${sense.id} (${language}, entry ${entry.id})`);
+      }
+    }
+  }
+  if (emptied.length > 0) {
+    throw new Error(
+      `Definition clean-up left ${emptied.length} sense(s) with no definition and no glosses:\n  ` +
+        emptied.join('\n  ')
+    );
+  }
+}
+
+/** The message of a thrown value, which is not necessarily an `Error` */
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function main(): void {
   const program = new Command();
 
@@ -1383,6 +1411,7 @@ function main(): void {
     ...definitionSources,
   });
   printDefinitionCleanupReport(cleanupReport);
+  failOnSensesEmptiedByCleanup(entriesByLanguage);
 
   // Fail before writing anything if sense domains disagree with the taxonomy labels
   console.log(`\nChecking sense domains against the English taxonomy labels...`);
@@ -1418,5 +1447,10 @@ function main(): void {
   console.log(`\nConversion completed successfully!`);
 }
 
-// Run the main function
-main();
+// A failure is printed once, here, rather than at every level it passes through
+try {
+  main();
+} catch (e) {
+  console.error(errorMessage(e));
+  process.exitCode = 1;
+}

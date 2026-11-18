@@ -29,9 +29,11 @@ jobs:
           git clone https://${{ secrets.MARBLE_REPO_TOKEN }}@github.com/ubsicap/marble-lexicon.git ../marble-lexicon
 
       - name: Convert SDBG lexicon
+        id: convert-sdbg
         run: npm run convert-sdbg
 
       - name: Convert SDBH lexicon
+        id: convert-sdbh
         run: npm run convert-sdbh
 
       - name: Create English directory and copy files
@@ -41,15 +43,18 @@ jobs:
           cp output-sdbh/lexicon_en.xml english/sdbh_en.xml
 
       - name: Import to SQLite
+        id: import
         run: npm run import-english-to-sqlite
 
       - name: Download the published English database
         run: |
           mkdir -p previous-db
+          # media.githubusercontent.com serves the Git LFS object; raw.githubusercontent.com would return the LFS pointer.
           curl -fsSL -o previous-db/lexical.db.xz https://media.githubusercontent.com/media/paranext/dependencies/main/lexical-db/lexical.db.xz
           xz -d previous-db/lexical.db.xz
 
       - name: Verify English database
+        id: verify
         run: python3 scripts/verify_english_db.py --db english.db --lexicon ../marble-lexicon --previous-db previous-db/lexical.db
 
       - name: Upload English database
@@ -59,9 +64,10 @@ jobs:
           path: english.db
           retention-days: 90
 
-      # A database that failed a step is kept for investigation under a name that says so
+      # A database that failed a step is kept for investigation under a name that says so. Only the
+      # steps that produce or check the database count: a failed upload is not a failed database.
       - name: Upload unverified English database
-        if: failure()
+        if: always() && (steps.convert-sdbg.outcome == 'failure' || steps.convert-sdbh.outcome == 'failure' || steps.import.outcome == 'failure' || steps.verify.outcome == 'failure')
         uses: actions/upload-artifact@v4
         with:
           name: english-database-unverified
@@ -69,11 +75,12 @@ jobs:
           if-no-files-found: ignore
           retention-days: 90
 
+      # The XML of a run that failed a step is named so, like its database
       - name: Upload XML files
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xml-files
+          name: ${{ (steps.convert-sdbg.outcome == 'failure' || steps.convert-sdbh.outcome == 'failure' || steps.import.outcome == 'failure' || steps.verify.outcome == 'failure') && 'xml-files-unverified' || 'xml-files' }}
           path: |
             output-sdbg/*.xml
             output-sdbh/*.xml

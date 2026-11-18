@@ -33,9 +33,11 @@ const occurrence = (text: string, type = 'U23003'): string =>
   `<Occurrence Type="${type}">${text}</Occurrence>`;
 
 function runImport(inputDir: string, outputFile: string) {
-  return spawnSync(
-    path.join(repoRoot, 'node_modules/.bin/ts-node'),
+  // Run ts-node through node itself: the .bin shim cannot be spawned directly on Windows
+  const result = spawnSync(
+    process.execPath,
     [
+      require.resolve('ts-node/dist/bin.js'),
       '--transpile-only',
       'src/import-lexicon-to-sqlite.ts',
       '--input',
@@ -45,6 +47,9 @@ function runImport(inputDir: string, outputFile: string) {
     ],
     { cwd: repoRoot, encoding: 'utf-8' }
   );
+  // A spawn failure (such as a missing executable) must not pass as an import failure
+  expect(result.error).toBeUndefined();
+  return result;
 }
 
 function countRows(dbFile: string, table: string): Promise<number> {
@@ -117,6 +122,56 @@ describe('import-lexicon-to-sqlite', () => {
     expect(fs.existsSync(outputFile)).toBe(false);
   }, 60000);
 
+  test('stores the senses of an entry in XML order, not sorted by Id', async () => {
+    fs.writeFileSync(
+      path.join(inputDir, 'ok.xml'),
+      lexiconXml(entryXml('E1', 'one', ['S3', 'S1', 'S2']))
+    );
+
+    const result = runImport(inputDir, outputFile);
+
+    expect(result.status).toBe(0);
+    const rows = await queryRows<{ Id: string }>(
+      outputFile,
+      'SELECT Id FROM Senses ORDER BY SenseKey'
+    );
+    expect(rows.map(row => row.Id)).toEqual(['S3', 'S1', 'S2']);
+  }, 60000);
+
+  test('exits non-zero and writes no database when the input has no .xml files', () => {
+    fs.writeFileSync(path.join(inputDir, 'notes.txt'), 'x');
+
+    const result = runImport(inputDir, outputFile);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).not.toContain('Import completed successfully!');
+    expect(result.stderr).toContain('No .xml files found');
+    expect(result.stderr).toContain(inputDir);
+    expect(fs.existsSync(outputFile)).toBe(false);
+  }, 60000);
+
+  test('exits non-zero when the .xml files hold no entries', () => {
+    fs.writeFileSync(path.join(inputDir, 'empty.xml'), lexiconXml(''));
+
+    const result = runImport(inputDir, outputFile);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('hold no entries');
+    expect(fs.existsSync(outputFile)).toBe(false);
+  }, 60000);
+
+  test('does not replace an existing database when the input has no .xml files', async () => {
+    fs.writeFileSync(path.join(inputDir, 'ok.xml'), lexiconXml(entryXml('E1', 'one', ['S1'])));
+    expect(runImport(inputDir, outputFile).status).toBe(0);
+    const emptyDir = path.join(tempDir, 'empty');
+    fs.mkdirSync(emptyDir);
+
+    const result = runImport(emptyDir, outputFile);
+
+    expect(result.status).not.toBe(0);
+    expect(await countRows(outputFile, 'Senses')).toBe(1);
+  }, 60000);
+
   test('exits non-zero when an entry Id is duplicated', () => {
     fs.writeFileSync(
       path.join(inputDir, 'dup.xml'),
@@ -126,6 +181,8 @@ describe('import-lexicon-to-sqlite', () => {
     const result = runImport(inputDir, outputFile);
 
     expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('E1');
+    expect(result.stderr).toContain('dup.xml');
     expect(fs.existsSync(outputFile)).toBe(false);
   }, 60000);
 
@@ -176,6 +233,7 @@ describe('import-lexicon-to-sqlite', () => {
     const result = runImport(inputDir, outputFile);
 
     expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('bad.xml');
     expect(await countRows(outputFile, 'Senses')).toBe(1);
   }, 60000);
 

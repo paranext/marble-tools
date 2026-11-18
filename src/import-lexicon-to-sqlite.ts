@@ -242,7 +242,7 @@ async function insertAndGetKey(
     : getKey(db, tableName, keyColumn, columnsAndValues, context);
 }
 
-// Insert a record that must be new. The tables use INSERT OR IGNORE, so a duplicate would
+// Insert a record that must be new. `insert` uses INSERT OR IGNORE, so a duplicate would
 // otherwise be dropped without any sign that source data was lost.
 async function insertNewAndGetKey(
   db: Database,
@@ -873,8 +873,10 @@ async function processDomains(
   }
 }
 
-async function processDirectory(dirPath: string, db: Database): Promise<void> {
+/** Imports every .xml file under the directory and returns how many there were */
+async function processDirectory(dirPath: string, db: Database): Promise<number> {
   const files = fs.readdirSync(dirPath);
+  let fileCount = 0;
 
   for (const file of files) {
     const filePath = path.join(dirPath, file);
@@ -882,12 +884,14 @@ async function processDirectory(dirPath: string, db: Database): Promise<void> {
 
     if (stat.isDirectory()) {
       // Recursively process subdirectories
-      await processDirectory(filePath, db);
+      fileCount += await processDirectory(filePath, db);
     } else if (file.endsWith('.xml')) {
       // Process XML files
       await processLexicalReference(filePath, db);
+      fileCount++;
     }
   }
+  return fileCount;
 }
 
 // Add database optimization function
@@ -910,9 +914,22 @@ async function main() {
 
   try {
     db = await initializeDatabase(tempOutput, options.schema);
+    let fileCount = 0;
     for (const inputDir of options.input) {
       console.log(`Processing directory: ${inputDir}`);
-      await processDirectory(inputDir, db);
+      fileCount += await processDirectory(inputDir, db);
+    }
+
+    // An input with nothing to import is a mistake (a wrong path, say), and must not replace a good
+    // database with an empty one
+    if (fileCount === 0) {
+      throw new Error(`No .xml files found in ${options.input.join(', ')}`);
+    }
+    const entryCount = (await db.get('SELECT COUNT(*) AS count FROM Entries')).count;
+    if (entryCount === 0) {
+      throw new Error(
+        `The ${fileCount} .xml file(s) in ${options.input.join(', ')} hold no entries`
+      );
     }
 
     // Call our optimization function

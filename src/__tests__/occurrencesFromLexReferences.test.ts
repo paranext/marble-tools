@@ -44,6 +44,12 @@ describe('occurrencesFromLexReferences', () => {
     expect(result.unknownBook).toEqual(['99900100100002', '00000100100002']);
   });
 
+  test('reports an unknown book even when the word ID is odd', () => {
+    const result = occurrencesFromLexReferences(['99900100100003']);
+    expect(result.unknownBook).toEqual(['99900100100003']);
+    expect(result.odd).toEqual([]);
+  });
+
   test('keeps each occurrence once, including references that differ only by a note', () => {
     expect(
       occurrencesFromLexReferences(['04200100100002', '04200100100002{N:001}', '04200100100004'])

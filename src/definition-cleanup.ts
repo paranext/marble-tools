@@ -1,41 +1,19 @@
 /**
  * Cleans up the definitions of the converted senses so they read as they do in Paratext 9's
  * dictionary (`ProcessMarkup` in Paratext 9's `DictionaryTab.cs`) and so their cross-references
- * open the entry they mean:
+ * open the entry they mean. README.md "Changes to definitions" describes each change and where it
+ * deliberately differs from Paratext 9; the functions' comments are the precise rules.
  *
- * - The structure symbols `= `, `► `, `◄ ` and `≈ ` (each followed by a space) are removed. Beyond
- *   Paratext 9, every remaining `►`, `◄` and `≈`, and an `=` that starts the definition or follows
- *   whitespace and is directly followed by a non-space, are removed too, because the source
- *   sometimes omits the space after a structure symbol. So is the full-width `＝` that the Chinese
- *   definitions use as their definition marker. Where removed symbols stood between two words, a
- *   space is left so the words are not joined.
- * - Each cross-reference target `{L:text<DICTIONARY:lemma>}` is rewritten to the exact lemma of the
- *   entry it means, because the Dictionary panel looks the target up by exact lemma.
- * - `[a]`, `[b]`, … (a meaning, by position) become `(1)`, `(2)`, …:
- *   - A letter directly after a cross-reference names a meaning of the LINKED entry, so it is
- *     numbered by that entry: the number is the position, among the linked entry's output senses in
- *     the same language, of the letter's lexical meaning (`a` is the first) of the base form the
- *     target names (the first base form when it names none). This deliberately differs from
- *     Paratext 9, which numbers every letter by the entry being displayed and so leaves the letters
- *     of a one-meaning entry as letters although they are valid for the entry they follow. A letter
- *     whose link does not resolve to an output entry, or whose meaning does not exist or is not
- *     output, is left as it is.
- *   - Any other letter is numbered when Paratext 9 numbers it: only when the base form whose
- *     definition it is has more than one meaning, and up to that number. Its number is the position
- *     of that meaning among the entry's output senses across all its base forms, as the Dictionary
- *     panel numbers them, so it can differ from the letter's position in the alphabet.
- *
- * Glosses are rendered by the Dictionary panel with the same markup parser, so their cross-reference
- * targets are rewritten in the same way. Their symbols and `[a]` letters are left alone: in glosses
- * `=` usually means "that is". Paratext 9 strips the structure symbols from glosses as well; this
- * converter deliberately does not. The one exception is a gloss that starts with `=` (the
- * definition marker): that `=` and the spaces after it are removed.
- *
- * In definitions and glosses, a digit run longer than 14 digits inside a `{S:...}` marker is
- * rewritten to a whole-verse reference, because the Dictionary panel reads only 14-digit references.
+ * - Structure symbols are removed from definitions (`stripStructureSymbols`), and a gloss's leading
+ *   `=` (`stripLeadingEquals`).
+ * - Cross-reference targets in definitions and glosses are rewritten to the exact lemma of the entry
+ *   they mean (`createLemmaLookup`, `rewriteCrossReferenceTargets`).
+ * - Meaning letters `[a]`, `[b]`, … in definitions become sense numbers (`replaceMeaningLetters`).
+ * - Over-long `{S:...}` references in definitions and glosses become whole-verse references
+ *   (`rewriteOverlongBibleReferences`).
  */
 
-import { bookMap } from './helpers';
+import { bookMap, ENTRY_PREFIX } from './helpers';
 
 /**
  * A cross-reference to another entry: `{L:display text<DICTIONARY:target>}`. The same pattern as the
@@ -46,7 +24,7 @@ import { bookMap } from './helpers';
 const CROSS_REFERENCE_REGEX = /\{L:([^<}]*)<([A-Za-z-]+):([^>}]*)>\}/g;
 
 /**
- * The dictionaries other than the one being converted whose targets occur in MARBLE's text. A target
+ * The dictionaries whose targets occur in MARBLE's text. A target
  * with any other prefix is reported as an unknown dictionary, so a misspelt prefix is not mistaken
  * for a link into another dictionary.
  */
@@ -234,19 +212,41 @@ const ARROW_SYMBOLS_REGEX = /[►◄≈]+/g;
 
 /** Scripts written without spaces between words, and the full-width and CJK punctuation */
 const NO_SPACE_SCRIPT_REGEX =
-  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u3000-\u303F\uFF00-\uFFEF]/u;
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\u3000-\u303F\uFF00-\uFFEF]/u;
 
-/** A character after which a removed symbol leaves no space: an opening bracket or quote */
-const OPENER_REGEX = /[({[“‘«"']/;
+/** A character after which a removed symbol leaves no space: an opening bracket or curly quote */
+const OPENER_REGEX = /[({[“‘«]/;
 
-/** A character before which a removed symbol leaves a space: a letter, digit or opening bracket */
-const WORD_START_REGEX = /[\p{L}\p{M}\p{N}({[“‘«"']/u;
+/** A straight quote, which opens a quotation only where a word could start */
+const STRAIGHT_QUOTE_REGEX = /["']/;
+
+/** The start of a word: a letter, digit, opening bracket or quote, or opening format markup */
+const WORD_START_REGEX = /^(?:[\p{L}\p{M}\p{N}({[“‘«"']|\|[iub](?!\*))/u;
+
+/** Text ending in markup that opens: a `{X:` marker, or format markup such as `|i` */
+const OPENING_MARKUP_END_REGEX = /(?:\{[A-Z]:|\|[iub])$/;
 
 /**
- * What replaces a removed run of structure symbols: a space when it stands
- * between a word (or punctuation such as `;`) and the next word, so the two are not joined, and
- * nothing otherwise (at either end, next to whitespace, after another structure symbol or a format
- * character, before closing punctuation, inside `{L:` markup, or in scripts written without spaces).
+ * Whether the text ends in an opening bracket or quote. A straight quote opens only at the start of
+ * the text or after whitespace or another opener; elsewhere it closes a quotation or is an
+ * apostrophe, and the next word must stay apart from it.
+ */
+function endsInOpener(text: string): boolean {
+  const last = text.at(-1);
+  if (last === undefined) return false;
+  if (OPENER_REGEX.test(last)) return true;
+  if (!STRAIGHT_QUOTE_REGEX.test(last)) return false;
+  const beforeQuote = text.slice(0, -1);
+  return beforeQuote === '' || /\s$/.test(beforeQuote) || endsInOpener(beforeQuote);
+}
+
+/**
+ * What replaces a removed run of structure symbols: a space when it stands between a word (or
+ * punctuation such as `;`, or the end of italic, underline or bold markup) and the next word (or
+ * the start of such markup), so the two are not joined, and nothing otherwise: at either end, next
+ * to whitespace, after another structure symbol, a format character or an opening bracket or quote,
+ * before closing punctuation, right after a markup opener such as `{L:` or `|i`, or in scripts
+ * written without spaces.
  */
 function arrowReplacement(before: string, after: string): string {
   const previous = before.at(-1);
@@ -254,9 +254,13 @@ function arrowReplacement(before: string, after: string): string {
   if (previous === undefined || next === undefined) return '';
   // A structure symbol before the run is removed by a later step, which then decides the space;
   // a format character such as a direction mark does not end a word
-  if (/[\s=►◄≈\p{Cf}]/u.test(previous) || OPENER_REGEX.test(previous) || /\{[A-Z]:$/.test(before))
+  if (
+    /[\s=►◄≈\p{Cf}]/u.test(previous) ||
+    endsInOpener(before) ||
+    OPENING_MARKUP_END_REGEX.test(before)
+  )
     return '';
-  if (!WORD_START_REGEX.test(next)) return '';
+  if (!WORD_START_REGEX.test(after)) return '';
   if (NO_SPACE_SCRIPT_REGEX.test(previous) || NO_SPACE_SCRIPT_REGEX.test(next)) return '';
   return ' ';
 }
@@ -337,7 +341,7 @@ const BIBLE_REFERENCE_MARKER_REGEX = /\{S:([^}]*)\}/g;
 /** A digit run too long to be one `BBBCCCVVVWWWWW` reference */
 const OVERLONG_RUN_REGEX = /\d{15,}/g;
 
-/** One whole-verse reference: book, chapter and verse, then the word position `00000` */
+/** The word position that means "the whole verse" */
 const WORD_POSITION_NONE = '00000';
 
 /** An over-long digit run in a `{S:...}` marker and what it was rewritten to */
@@ -395,7 +399,10 @@ export interface MeaningLetterCounts {
   linkedUnresolved: number;
   /** Letters after a link that were left because the linked entry has no such output meaning */
   linkedNoMeaning: number;
-  /** Numbered letters whose link names a meaning position (`:BBBMMM`) with the same meaning */
+  /**
+   * Numbered letters whose link names a meaning position (`:BBBMMM`: a 3-digit base-form index and
+   * a 3-digit meaning index, both from 000) with the same meaning
+   */
   linkedPositionAgrees: number;
   /** Numbered letters whose link names a meaning position with a different meaning */
   linkedPositionDiffers: number;
@@ -454,7 +461,7 @@ function emptyMeaningLetterCounts(): MeaningLetterCounts {
 }
 
 /**
- * Replaces `[a]`, `[b]`, … with `(1)`, `(2)`, … (see the module comment).
+ * Replaces `[a]`, `[b]`, … with `(1)`, `(2)`, ….
  *
  * A letter directly after a cross-reference is numbered by `linkedMeaningNumber`; it is left as it
  * is when that returns no number, or when none is given.
@@ -568,7 +575,7 @@ export interface CrossReferenceProblem {
   language: string;
   /** Where the cross-reference is */
   field: 'definition' | 'gloss';
-  /** The entry whose definition holds the cross-reference */
+  /** The entry whose definition or gloss holds the cross-reference */
   entryId: string;
   dictionaryId: string;
   target: string;
@@ -632,7 +639,10 @@ export interface RewrittenBibleReferenceEntry extends BibleReferenceProblem {
 
 export interface DefinitionCleanupReport {
   byLanguage: Record<string, LanguageCleanupCounts>;
-  /** Targets that do not resolve to an output entry: ambiguous, not output, or not found */
+  /**
+   * Targets that do not resolve to an output entry: ambiguous, not output, not found, or in an
+   * unknown dictionary
+   */
   unresolved: CrossReferenceProblem[];
   /** Targets whose entry exists but the conversion rules leave out */
   excludedByDesign: CrossReferenceProblem[];
@@ -674,9 +684,10 @@ function emptyCounts(): LanguageCleanupCounts {
 }
 
 /**
- * Cleans up every output sense, in place: strips the structure symbols from definitions, rewrites
- * cross-reference targets in definitions and glosses to the exact lemma of an output entry, and
- * numbers meaning letters in definitions. A target whose dictionary is the one being converted
+ * Cleans up every output sense, in place: strips the structure symbols from definitions and a
+ * leading `=` or `＝` from glosses, rewrites cross-reference targets in definitions and glosses to
+ * the exact lemma of an output entry, numbers meaning letters in definitions, and rewrites over-long
+ * `{S:...}` references in both to whole-verse references. A target whose dictionary is the one being converted
  * (compared without regard to case, as MARBLE has `sdbh` and `sdbg`) is written with the canonical
  * dictionary ID. Run it once the entries that will be output are final, since a target is rewritten
  * only if its entry is output. Targets are matched against every source entry, so a target that
@@ -765,7 +776,8 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
             return undefined;
           }
           const found = result.entry;
-          if (entries[found.lemma]) {
+          // Another output entry can share the found entry's lemma; only the found entry will do
+          if (entries[found.lemma]?.id === `${ENTRY_PREFIX}${found.id}`) {
             refs[result.step]++;
             return { dictionaryId, lemma: found.lemma };
           }
@@ -793,7 +805,7 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
         const found = lookup(target.lemma);
         if (found.kind !== 'found') return 'unresolved';
         const linkedEntry = entries[found.entry.lemma];
-        if (!linkedEntry) return 'unresolved';
+        if (linkedEntry?.id !== `${ENTRY_PREFIX}${found.entry.id}`) return 'unresolved';
         const baseForms = meaningSenseIdsByEntryId.get(found.entry.id) ?? [];
         const baseFormIndex = target.position.length >= 3 ? Number(target.position.slice(0, 3)) : 0;
         const senseId = baseForms[baseFormIndex]?.[meaningIndex];

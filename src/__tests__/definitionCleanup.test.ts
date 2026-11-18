@@ -230,6 +230,26 @@ describe('stripStructureSymbols', () => {
     expect(stripStructureSymbols('人；► 物').text).toBe('人；物');
   });
 
+  test('leaves a space after a closing straight quote or apostrophe, and none after an opening one', () => {
+    expect(stripStructureSymbols('to say "yes"► then').text).toBe('to say "yes" then');
+    expect(stripStructureSymbols("the priests'► duty").text).toBe("the priests' duty");
+    expect(stripStructureSymbols("said 'no'= other").text).toBe("said 'no' other");
+    expect(stripStructureSymbols('say "► yes" and (\'► no\')').text).toBe('say "yes" and (\'no\')');
+  });
+
+  test('treats italic, underline and bold markup as the start or end of a word', () => {
+    expect(stripStructureSymbols('beetles;◄ |iUpupa epops|i*').text).toBe(
+      'beetles; |iUpupa epops|i*'
+    );
+    expect(stripStructureSymbols('word|i*► next').text).toBe('word|i* next');
+    expect(stripStructureSymbols('|b► word|b*').text).toBe('|bword|b*');
+    expect(stripStructureSymbols('end►|next line').text).toBe('end|next line');
+  });
+
+  test('leaves a space between Korean words, which are written with spaces', () => {
+    expect(stripStructureSymbols('사람►아들').text).toBe('사람 아들');
+  });
+
   test('removes a doubled equals sign, and leaves no space after a direction mark', () => {
     expect(stripStructureSymbols('== word').text).toBe('word');
     expect(stripStructureSymbols('‎= a reference').text).toBe('‎a reference');
@@ -662,14 +682,6 @@ describe('cleanUpDefinitions', () => {
       expect(report.byLanguage.en.glossCrossReferences.exact).toBe(1);
     });
 
-    test("strips a gloss's leading equals sign and counts it, leaving other gloss text alone", () => {
-      const { sense, report } = clean('SDBH', '=a ►b', ['= x', '►y = z']);
-      expect(sense.definition).toBe('a b');
-      expect(sense.glosses).toEqual(['x', '►y = z']);
-      expect(report.byLanguage.en.glossLeadingEquals).toBe(1);
-      expect(report.byLanguage.en.unspacedSymbols).toEqual({ ...noUnspaced, '=': 1, '►': 1 });
-    });
-
     test('lists a lower-case target that matches no entry as unresolved', () => {
       const { sense, report } = clean('SDBG', '{L:x<sdbg:missing:000000>}');
       expect(sense.definition).toBe('{L:x<sdbg:missing:000000>}');
@@ -697,6 +709,77 @@ describe('cleanUpDefinitions', () => {
         ]);
       }
     );
+  });
+
+  test("strips a gloss's leading equals sign and counts it, leaving other gloss text alone", () => {
+    const entriesByLanguage = {
+      en: {
+        a: {
+          id: 'entry-1',
+          senses: [{ id: 's1', definition: '=a ►b', glosses: ['= x', '►y = z'] }],
+        },
+      },
+    };
+    const report = cleanUpDefinitions({
+      dictionaryId: 'SDBH',
+      entriesByLanguage,
+      sourceEntries: [entry('1', 'a')],
+      baseFormMeaningCountBySenseId: new Map(),
+      meaningSenseIdsByEntryId: new Map(),
+    });
+    expect(entriesByLanguage.en.a.senses[0]).toMatchObject({
+      definition: 'a b',
+      glosses: ['x', '►y = z'],
+    });
+    expect(report.byLanguage.en.glossLeadingEquals).toBe(1);
+    expect(report.byLanguage.en.unspacedSymbols).toEqual({ ...noUnspaced, '=': 1, '►': 1 });
+  });
+
+  describe('a target that means an entry that is not output', () => {
+    // Entry 1 is left out by design and has the alternate lemma "alt"; output entry 2 has the same
+    // lemma, "shared"
+    function clean(definition: string) {
+      const entriesByLanguage = {
+        en: {
+          shared: { id: 'entry-2', lemma: 'shared', senses: [sense('s2', 'meaning')] },
+          current: { id: 'entry-3', lemma: 'current', senses: [sense('s3', definition)] },
+        },
+      };
+      const report = cleanUpDefinitions({
+        dictionaryId: 'SDBH',
+        entriesByLanguage,
+        sourceEntries: [
+          { ...entry('1', 'shared', ['alt']), excludedByDesign: 'version 2 is below 3' },
+          entry('2', 'shared'),
+          entry('3', 'current'),
+        ],
+        baseFormMeaningCountBySenseId: new Map([['s3', 1]]),
+        meaningSenseIdsByEntryId: new Map([
+          ['1', [['x1']]],
+          ['2', [['s2']]],
+          ['3', [['s3']]],
+        ]),
+      });
+      return { definition: entriesByLanguage.en.current.senses[0].definition, report };
+    }
+
+    test('is reported rather than rewritten to another entry with the same lemma', () => {
+      const { definition, report } = clean('{L:t<SDBH:alt>}');
+      expect(definition).toBe('{L:t<SDBH:alt>}');
+      expect(report.byLanguage.en.crossReferences).toMatchObject({
+        alternateLemma: 0,
+        excludedByDesign: 1,
+      });
+      expect(report.excludedByDesign).toMatchObject([
+        { target: 'alt', reason: 'entry 1: version 2 is below 3' },
+      ]);
+    });
+
+    test('leaves a meaning letter after it unnumbered', () => {
+      const { definition, report } = clean('{L:t<SDBH:alt>}[a]');
+      expect(definition).toBe('{L:t<SDBH:alt>}[a]');
+      expect(report.byLanguage.en.meaningLetters.linkedUnresolved).toBe(1);
+    });
   });
 
   test('rewrites cross-reference targets in glosses and counts them apart from definitions', () => {
@@ -796,7 +879,7 @@ describe('cleanUpDefinitions', () => {
       ],
     ]);
 
-    function clean(definition: string, currentEntryMeanings = 1) {
+    function clean(definition: string) {
       const entriesByLanguage = {
         en: {
           current: { id: 'entry-1', lemma: 'current', senses: [sense('c0', definition)] },
@@ -807,7 +890,7 @@ describe('cleanUpDefinitions', () => {
         dictionaryId: 'SDBG',
         entriesByLanguage,
         sourceEntries: [entry('1', 'current'), entry('2', 'multi')],
-        baseFormMeaningCountBySenseId: new Map([['c0', currentEntryMeanings]]),
+        baseFormMeaningCountBySenseId: new Map([['c0', 1]]),
         meaningSenseIdsByEntryId,
       });
       return { definition: entriesByLanguage.en.current.senses[0].definition, report };
@@ -843,11 +926,6 @@ describe('cleanUpDefinitions', () => {
       expect(definition).toBe('{L:x<SDBG:missing:000000>}[a]');
       expect(report.byLanguage.en.meaningLetters.linkedUnresolved).toBe(1);
     });
-
-    test('numbers a letter with no link before it only when its base form has that many meanings', () => {
-      expect(clean('see [b]').definition).toBe('see [b]');
-      expect(clean('see [c]', 2).definition).toBe('see [c]');
-    });
   });
 
   describe('meaning letters with no link before them', () => {
@@ -880,6 +958,12 @@ describe('cleanUpDefinitions', () => {
       const { senses, report } = clean({ o10: 'see [b]' });
       expect(senses[1].definition).toBe('see [b]');
       expect(report.byLanguage.en.meaningLetters).toMatchObject({ replaced: 0, notOutput: 1 });
+    });
+
+    test('leaves a letter beyond the number of meanings of its base form', () => {
+      const { senses, report } = clean({ o10: 'see [d]' });
+      expect(senses[1].definition).toBe('see [d]');
+      expect(report.byLanguage.en.meaningLetters).toMatchObject({ replaced: 0, outOfRange: 1 });
     });
 
     test('leaves a letter in a base form with one meaning, as Paratext 9 does', () => {

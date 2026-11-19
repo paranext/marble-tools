@@ -64,10 +64,10 @@ jobs:
           path: english.db
           retention-days: 90
 
-      # A database that failed a step is kept for investigation under a name that says so. Only the
-      # steps that produce or check the database count: a failed upload is not a failed database.
+      # A database that was not verified (a step failed or was skipped, or the run was cancelled) is
+      # kept for investigation under a name that says so. A failed upload is not a failed database.
       - name: Upload unverified English database
-        if: always() && (steps.convert-sdbg.outcome == 'failure' || steps.convert-sdbh.outcome == 'failure' || steps.import.outcome == 'failure' || steps.verify.outcome == 'failure')
+        if: always() && steps.verify.outcome != 'success'
         uses: actions/upload-artifact@v4
         with:
           name: english-database-unverified
@@ -75,12 +75,12 @@ jobs:
           if-no-files-found: ignore
           retention-days: 90
 
-      # The XML of a run that failed a step is named so, like its database
+      # The XML of a run whose database was not verified is named so, like its database
       - name: Upload XML files
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ (steps.convert-sdbg.outcome == 'failure' || steps.convert-sdbh.outcome == 'failure' || steps.import.outcome == 'failure' || steps.verify.outcome == 'failure') && 'xml-files-unverified' || 'xml-files' }}
+          name: ${{ steps.verify.outcome == 'success' && 'xml-files' || 'xml-files-unverified' }}
           path: |
             output-sdbg/*.xml
             output-sdbh/*.xml

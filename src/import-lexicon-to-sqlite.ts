@@ -7,7 +7,7 @@ import path from 'path';
 import sqlite3 from 'sqlite3';
 import { open, Database } from 'sqlite';
 import { Command } from 'commander';
-import { parseU23003Reference, parseXmlStrict } from './helpers';
+import { errorMessage, errorReport, parseU23003Reference, parseXmlStrict } from './helpers';
 
 // Cache objects to reduce database lookups
 interface ForeignKeyCache {
@@ -37,11 +37,6 @@ const verbose = options.verbose || false;
 // The database is built here and moved to the output path only after a successful import, so a
 // failed import never leaves a partial database at the output path.
 const tempOutput = `${options.output}.tmp`;
-
-/** The message of a thrown value, which is not necessarily an `Error` */
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 // Helper function to log detailed error information
 function logError(error: unknown, context: string, details: Record<string, unknown> = {}): void {
@@ -941,7 +936,7 @@ async function main() {
     fs.renameSync(tempOutput, options.output);
     console.log('Import completed successfully!');
   } catch (error: unknown) {
-    console.error('Error during import:', errorMessage(error));
+    console.error('Error during import:', errorReport(error));
     await db?.close().catch(() => undefined);
     if (builtDatabaseComplete) {
       // The database was fully built; only moving it into place failed, so keep it.
@@ -954,7 +949,7 @@ async function main() {
 }
 
 main().catch((error: unknown) => {
-  console.error('Error during import:', errorMessage(error));
+  console.error('Error during import:', errorReport(error));
   fs.rmSync(tempOutput, { force: true });
   process.exit(1);
 });

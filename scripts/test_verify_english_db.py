@@ -31,16 +31,18 @@ def quiet(function, *args):
 
 
 def lexicon_entry(entry_number, meanings, version=3):
-    """A Lexicon_Entry; each meaning is (meaning Id, attributes, [LEXReference], definition)"""
+    """A Lexicon_Entry; each meaning is (meaning Id, attributes, [LEXReference], definition), with an
+    optional fifth item, its [Gloss]"""
     meaning_xml = ''.join(
         f'''<LEXMeaning Id="{meaning_id}" {attributes}>
               <LEXReferences>{''.join(f'<LEXReference>{r}</LEXReference>' for r in references)}</LEXReferences>
               <LEXSenses><LEXSense LanguageCode="en">
                 <DefinitionShort>{definition}</DefinitionShort>
+                <Glosses>{''.join(f'<Gloss>{g}</Gloss>' for g in (glosses[0] if glosses else []))}</Glosses>
               </LEXSense></LEXSenses>
               <CONMeanings/>
             </LEXMeaning>'''
-        for meaning_id, attributes, references, definition in meanings
+        for meaning_id, attributes, references, definition, *glosses in meanings
     )
     return f'''<Lexicon_Entry Id="{entry_number:06d}000000000" Lemma="lemma{entry_number}" Version="{version}">
       <BaseForms><BaseForm Id="{entry_number:06d}001000000">
@@ -228,7 +230,7 @@ class CheckSensesAndOccurrencesTests(unittest.TestCase):
 
     def check(self, senses_by_dictionary, lemmas=None):
         create_database(self.db_path, senses_by_dictionary, lemmas)
-        return quiet(verify.check_senses_and_occurrences, self.db_path, self.lexicon)
+        return quiet(verify.check_senses_occurrences_and_text, self.db_path, self.lexicon)
 
     GREEK_SENSE = ('000001', '000001001001000', [LUKE_1_1_WORD_1_POSITION])
 
@@ -466,6 +468,27 @@ class CheckSensesAndOccurrencesTests(unittest.TestCase):
 
         self.assertTrue(any('check 5 SDBH' in f and '{L: markers differs' in f for f in failures))
 
+    def test_fails_a_sense_whose_source_glosses_are_all_missing(self):
+        self.lexicon_with(
+            [('000002001001000', 'IsBiblicalTerm="Y"', [LUKE_1_1_WORD_1], 'h', ['a gloss'])]
+        )
+
+        failures = self.check(
+            {
+                'SDBG': [self.GREEK_SENSE],
+                'SDBH': [
+                    (
+                        '000002',
+                        '000002001001000',
+                        [LUKE_1_1_WORD_1_POSITION],
+                        {'definition': 'h', 'glosses': []},
+                    )
+                ],
+            }
+        )
+
+        self.assertTrue(any('check 5 SDBH' in f and 'glosses' in f for f in failures))
+
     def test_fails_when_the_lexicon_yields_no_senses(self):
         # A wrong --lexicon path must not pass as an empty match of an empty database
         failures = self.check({'SDBG': [], 'SDBH': []})
@@ -487,14 +510,31 @@ class DefinitionTextTests(unittest.TestCase):
     def test_fails_a_structure_symbol_in_a_definition(self):
         for symbol in ('\u25ba', '\u25c4', '\u2248'):
             with self.subTest(symbol=symbol):
-                failures = self.check({'a': (f'word {symbol}', ['g'])}, {'a': ('word', ['g'])})
-                self.assertTrue(any('structure symbol' in f and 'a' in f for f in failures))
+                failures = self.check(
+                    {'sense-x': (f'word {symbol}', ['g'])}, {'sense-x': ('word', ['g'])}
+                )
+                self.assertTrue(any('structure symbol' in f and 'sense-x' in f for f in failures))
 
-    def test_fails_an_s_marker_that_is_not_14_digits(self):
-        for marker in ('{S:0420010010000}', '{S:042001001000022}', '{S:}'):
+    def test_fails_an_s_reference_that_is_not_14_digits(self):
+        for marker in (
+            '{S:0420010010000}',
+            '{S:042001001000022}',
+            '{S:}',
+            '{S:00101903800100 01300301900000000}',
+        ):
             with self.subTest(marker=marker):
                 failures = self.check({'a': (f'x {marker}', ['g'])}, {'a': ('x', ['g'])})
-                self.assertTrue(any('{S: marker' in f for f in failures))
+                self.assertTrue(any('{S: reference' in f for f in failures))
+
+    def test_fails_an_s_reference_in_a_gloss_that_is_not_14_digits(self):
+        failures = self.check({'a': ('x', ['{S:042001001000022}'])}, {'a': ('x', ['g'])})
+
+        self.assertTrue(any('{S: reference' in f for f in failures))
+
+    def test_passes_several_14_digit_references_and_a_range_in_one_marker(self):
+        text = ('{S:04000202300032 04201803700014} {S:00401503700000-00401504100000}', ['g'])
+
+        self.assertEqual(self.check({'a': text}, {'a': text}), [])
 
     def test_fails_when_the_number_of_l_markers_differs_from_the_source(self):
         source = {'a': ('{L:x<SDBH:y>} {L:z<SDBH:w>}', ['g'])}

@@ -220,8 +220,11 @@ const OPENER_REGEX = /[({[“‘«]/;
 /** A straight quote, which opens a quotation only where a word could start */
 const STRAIGHT_QUOTE_REGEX = /["']/;
 
-/** The start of a word: a letter, digit, opening bracket or quote, or opening format markup */
-const WORD_START_REGEX = /^(?:[\p{L}\p{M}\p{N}({[“‘«"']|\|[iub](?!\*))/u;
+/**
+ * The start of a word: a letter, digit, opening bracket or curly quote, opening format markup, or a
+ * straight quote directly followed by a letter or digit
+ */
+const WORD_START_REGEX = /^(?:[\p{L}\p{M}\p{N}({[“‘«]|\|[iub](?!\*)|["'][\p{L}\p{M}\p{N}])/u;
 
 /** Text ending in markup that opens: a `{X:` marker, or format markup such as `|i` */
 const OPENING_MARKUP_END_REGEX = /(?:\{[A-Z]:|\|[iub])$/;
@@ -261,6 +264,8 @@ function arrowReplacement(before: string, after: string): string {
   )
     return '';
   if (!WORD_START_REGEX.test(after)) return '';
+  // An apostrophe between two letters belongs to the word before it, as in "priest's"
+  if (after.startsWith("'") && /[\p{L}\p{M}\p{N}]/u.test(previous)) return '';
   if (NO_SPACE_SCRIPT_REGEX.test(previous) || NO_SPACE_SCRIPT_REGEX.test(next)) return '';
   return ' ';
 }

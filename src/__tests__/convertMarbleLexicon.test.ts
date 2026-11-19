@@ -21,7 +21,7 @@ interface MeaningSpec {
   attributes?: string;
   references?: string[];
   definition?: string;
-  glossless?: boolean;
+  glosses?: string[];
   contextualMeanings?: ContextualMeaningSpec[];
 }
 
@@ -38,8 +38,8 @@ interface FixtureOptions {
   references?: string[];
   /** The English definition of the default meaning */
   definition?: string;
-  /** Leaves the default meaning's sense without glosses, so only its definition keeps it */
-  glossless?: boolean;
+  /** The English glosses of the default meaning */
+  glosses?: string[];
   /** Contextual meanings of the default meaning */
   contextualMeanings?: ContextualMeaningSpec[];
   /** The Lemma of a second entry (Id 000002000000000) to add to the file */
@@ -58,12 +58,12 @@ function senseXml(
   kind: 'LEX' | 'CON',
   attributes: string,
   definition: string,
-  glossless = false
+  glosses = ['a gloss']
 ): string {
   return `<${kind}Senses>
               <${kind}Sense ${attributes}>
                 <DefinitionShort>${definition}</DefinitionShort>
-                <Glosses>${glossless ? '' : '<Gloss>a gloss</Gloss>'}</Glosses>
+                <Glosses>${glosses.map(gloss => `<Gloss>${gloss}</Gloss>`).join('')}</Glosses>
               </${kind}Sense>
             </${kind}Senses>`;
 }
@@ -79,7 +79,7 @@ function meaningXml(meaning: MeaningSpec, senseAttributes: string): string {
     .join('');
   return `<LEXMeaning ${meaning.attributes ?? ''}>
             ${referencesXml('LEXReference', 'LEXReferences', meaning.references ?? [])}
-            ${senseXml('LEX', senseAttributes, meaning.definition ?? 'a definition', meaning.glossless)}
+            ${senseXml('LEX', senseAttributes, meaning.definition ?? 'a definition', meaning.glosses)}
             <CONMeanings>${contextual}</CONMeanings>
           </LEXMeaning>`;
 }
@@ -92,7 +92,7 @@ function lexiconFile(options: FixtureOptions = {}): string {
     senseAttributes = 'LanguageCode="en"',
     references = ['04200100100002'],
     definition,
-    glossless,
+    glosses,
     contextualMeanings,
     secondEntryLemma,
     baseForms,
@@ -128,7 +128,7 @@ function lexiconFile(options: FixtureOptions = {}): string {
         attributes: meaningAttributes,
         references,
         definition,
-        glossless,
+        glosses,
         contextualMeanings,
       });
   const secondForms = secondEntryBaseForms
@@ -269,8 +269,9 @@ describe('convert-marble-lexicon', () => {
 
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain('SDBG-01.XML');
-      // The error is printed once, not again by the runtime with a stack trace
+      // The error is printed once, and without a stack trace: it is a data error
       expect(result.stderr.match(/Error processing file/g)).toHaveLength(1);
+      expect(result.stderr).not.toMatch(/^\s+at /m);
     },
     60000
   );
@@ -503,13 +504,20 @@ describe('convert-marble-lexicon', () => {
       expect(readDefinitions(outputDir)).toEqual(['a definition', 'see (1)']);
     }, 60000);
 
-    test('fails when the clean-up leaves a sense with no definition and no glosses', () => {
-      const result = convert('SDBG', { definition: '&#x25C4;', glossless: true });
+    test.each([
+      ['no glosses', []],
+      ['only a gloss that the clean-up empties', ['=']],
+    ])(
+      'fails when the clean-up leaves a sense with no definition and %s',
+      (_description, glosses: string[]) => {
+        const result = convert('SDBG', { definition: '&#x25C4;', glosses });
 
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain('000001001001000');
-      expect(result.stderr).toContain('no definition and no glosses');
-      expect(fs.existsSync(path.join(outputDir, 'lexicon_en.xml'))).toBe(false);
-    }, 60000);
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain('000001001001000');
+        expect(result.stderr).toContain('no definition and no non-empty gloss');
+        expect(fs.existsSync(path.join(outputDir, 'lexicon_en.xml'))).toBe(false);
+      },
+      60000
+    );
   });
 });

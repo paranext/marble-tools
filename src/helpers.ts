@@ -734,3 +734,22 @@ export function verifyUniqueEntryAndSenseIds(
     }
   }
 }
+
+/** The message of a thrown value, which is not necessarily an `Error` */
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * What a command-line tool prints for a failure: its message, followed by the stack of the innermost
+ * `cause` when that is an unexpected JavaScript error such as a `TypeError`. The tools' own data
+ * errors are plain `Error`s whose message says everything, so they print without a stack.
+ */
+export function errorReport(error: unknown): string {
+  let innermost = error;
+  while (innermost instanceof Error && innermost.cause !== undefined) innermost = innermost.cause;
+  const message = errorMessage(error);
+  if (innermost instanceof Error && innermost.constructor !== Error && innermost.stack)
+    return `${message}\n${innermost.stack}`;
+  return message;
+}

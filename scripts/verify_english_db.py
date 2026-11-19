@@ -30,10 +30,11 @@ Checks:
    threshold is expected, raise MAX_DROP_FRACTION in the pull request that causes it.
 4. Links oracle (--links): informational comparison with the published MARBLELinks lexical links.
 5. Definition text: invariants of the cleaned-up definitions, checked on the database rather than by
-   repeating the clean-up. No definition contains a structure symbol (►, ◄ or ≈); every
-   {S: marker holds a 14-digit reference; a definition has as many {L: markers as its source
-   definition; and a definition or gloss that was not empty in the source is not empty in the
-   database.
+   repeating the clean-up. No definition contains a structure symbol (►, ◄ or ≈); every digit run
+   in a {S: marker, in definitions and glosses, is exactly 14 digits (the Dictionary panel cannot
+   read any other, so a run the converter could not rewrite, which it only reports, fails here); a
+   definition has as many {L: markers as its source definition; and a definition or gloss that was
+   not empty in the source is not empty in the database.
 
 Usage: python3 scripts/verify_english_db.py --db english.db --lexicon ../marble-lexicon
            [--links ../marble-indexes/Full] [--previous-db path]
@@ -239,7 +240,7 @@ def sample(items):
     return ', '.join(str(i) for i in shown) + (f' (and {more} more)' if more > 0 else '')
 
 
-def check_senses_and_occurrences(db_path, lexicon_root):
+def check_senses_occurrences_and_text(db_path, lexicon_root):
     failures = []
     for name in DICTIONARIES:
         expected, expected_lemmas, stats, source_texts = expected_from_lexicon(lexicon_root, name)
@@ -327,7 +328,7 @@ def check_definition_text(name, definitions, source_texts):
     `source_texts` maps sense ID -> (definition, [glosses]) in the lexicon. Returns the failures."""
     problems = {
         'a structure symbol remains': [],
-        'a {S: marker does not hold exactly 14 digits': [],
+        'a {S: reference is not exactly 14 digits': [],
         'the number of {L: markers differs from the source': [],
         'a definition that was not empty in the source is empty': [],
         'glosses that were not empty in the source are all missing': [],
@@ -335,8 +336,12 @@ def check_definition_text(name, definitions, source_texts):
     for sense_id, (definition, glosses) in definitions.items():
         if any(symbol in definition for symbol in STRUCTURE_SYMBOLS):
             problems['a structure symbol remains'].append(sense_id)
-        if any(len(digits) != 14 for digits in re.findall(r'\{S:(\d*)', definition)):
-            problems['a {S: marker does not hold exactly 14 digits'].append(sense_id)
+        if any(
+            not runs or any(len(digits) != 14 for digits in runs)
+            for text in (definition, *glosses)
+            for runs in (re.findall(r'\d+', marker) for marker in re.findall(r'\{S:([^}]*)\}', text))
+        ):
+            problems['a {S: reference is not exactly 14 digits'].append(sense_id)
         if sense_id not in source_texts:
             continue
         source_definition, source_glosses = source_texts[sense_id]
@@ -442,7 +447,7 @@ def main():
     parser.add_argument('--previous-db', help='the currently published database, for check 3')
     args = parser.parse_args()
 
-    failures = check_senses_and_occurrences(args.db, args.lexicon)
+    failures = check_senses_occurrences_and_text(args.db, args.lexicon)
     if args.previous_db:
         failures += check_previous(args.db, args.previous_db)
     if args.links:

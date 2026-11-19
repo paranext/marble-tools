@@ -237,11 +237,18 @@ describe('stripStructureSymbols', () => {
     expect(stripStructureSymbols('say "► yes" and (\'► no\')').text).toBe('say "yes" and (\'no\')');
   });
 
+  test('leaves no space before a closing straight quote or an apostrophe within a word', () => {
+    expect(stripStructureSymbols('the "son►" of').text).toBe('the "son" of');
+    expect(stripStructureSymbols("priest►'s duty").text).toBe("priest's duty");
+    expect(stripStructureSymbols('word►"quoted"').text).toBe('word "quoted"');
+  });
+
   test('treats italic, underline and bold markup as the start or end of a word', () => {
     expect(stripStructureSymbols('beetles;◄ |iUpupa epops|i*').text).toBe(
       'beetles; |iUpupa epops|i*'
     );
     expect(stripStructureSymbols('word|i*► next').text).toBe('word|i* next');
+    expect(stripStructureSymbols('word►|i* next').text).toBe('word|i* next');
     expect(stripStructureSymbols('|b► word|b*').text).toBe('|bword|b*');
     expect(stripStructureSymbols('end►|next line').text).toBe('end|next line');
   });

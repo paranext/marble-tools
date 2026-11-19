@@ -26,6 +26,8 @@ import {
   DICTIONARY_TYPE,
   ENTRY_PREFIX,
   ENTRY_VERSION,
+  errorMessage,
+  errorReport,
   extractDefinitionAndGlosses,
   findConReferencesMissingFromLex,
   referenceKeys,
@@ -1270,29 +1272,24 @@ function formatXml(xml: string): string {
 /**
  * The clean-up runs after the empty senses are removed, so a definition made only of symbols that
  * it removes would leave a blank sense in the output. Fails the conversion for any sense that the
- * removal would now have dropped (no definition and no glosses).
+ * removal would now have dropped (no definition and no non-empty gloss).
  */
 function failOnSensesEmptiedByCleanup(entriesByLanguage: EntriesByLanguage): void {
   const emptied: string[] = [];
   for (const [language, entries] of Object.entries(entriesByLanguage)) {
     for (const entry of Object.values(entries)) {
       for (const sense of entry.senses) {
-        if (!sense.definition && sense.glosses.length === 0)
+        if (!sense.definition && sense.glosses.every(gloss => !gloss))
           emptied.push(`${sense.id} (${language}, entry ${entry.id})`);
       }
     }
   }
   if (emptied.length > 0) {
     throw new Error(
-      `Definition clean-up left ${emptied.length} sense(s) with no definition and no glosses:\n  ` +
+      `Definition clean-up left ${emptied.length} sense(s) with no definition and no non-empty gloss:\n  ` +
         emptied.join('\n  ')
     );
   }
-}
-
-/** The message of a thrown value, which is not necessarily an `Error` */
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function main(): void {
@@ -1451,6 +1448,6 @@ function main(): void {
 try {
   main();
 } catch (e) {
-  console.error(errorMessage(e));
+  console.error(errorReport(e));
   process.exitCode = 1;
 }

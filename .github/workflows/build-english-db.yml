@@ -4,6 +4,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      lexicon-ref:
+        description: 'marble-lexicon commit to build from (default: its latest commit)'
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -25,8 +30,11 @@ jobs:
       # Runs after npm ci so dependency install scripts can't read the token that git clone
       # stores in the cloned repos' .git/config
       - name: Clone private repositories
+        env:
+          LEXICON_REF: ${{ inputs.lexicon-ref }}
         run: |
           git clone https://${{ secrets.MARBLE_REPO_TOKEN }}@github.com/ubsicap/marble-lexicon.git ../marble-lexicon
+          if [ -n "$LEXICON_REF" ]; then git -C ../marble-lexicon checkout --detach "$LEXICON_REF"; fi
 
       - name: Convert SDBG lexicon
         id: convert-sdbg
@@ -57,11 +65,22 @@ jobs:
         id: verify
         run: python3 scripts/verify_english_db.py --db english.db --lexicon ../marble-lexicon --previous-db previous-db/lexical.db
 
+      # build-info.json travels with the database into paranext/dependencies, which keeps it as the
+      # lasting record of this build (this run's logs and artifacts expire)
+      - name: Record where the English database came from
+        id: build-info
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PULL_REQUEST_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/write_build_info.py --db english.db --lexicon ../marble-lexicon --output build-info.json --run-url "$RUN_URL" --pull-request-head "$PULL_REQUEST_HEAD"
+
       - name: Upload English database
         uses: actions/upload-artifact@v4
         with:
           name: english-database
-          path: english.db
+          path: |
+            english.db
+            build-info.json
           retention-days: 90
 
       # A database that was not verified (a step failed or was skipped, or the run was cancelled) is
@@ -71,7 +90,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: english-database-unverified
-          path: english.db
+          path: |
+            english.db
+            build-info.json
           if-no-files-found: ignore
           retention-days: 90
 

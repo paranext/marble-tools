@@ -339,7 +339,7 @@ def check_definition_text(name, definitions, source_texts):
         if any(
             not runs or any(len(digits) != 14 for digits in runs)
             for text in (definition, *glosses)
-            for runs in (re.findall(r'\d+', marker) for marker in re.findall(r'\{S:([^}]*)\}', text))
+            for runs in (re.findall(r'\d+', marker) for marker in re.findall(r'\{S:([^}]*)', text))
         ):
             problems['a {S: reference is not exactly 14 digits'].append(sense_id)
         if sense_id not in source_texts:

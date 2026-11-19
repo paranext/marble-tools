@@ -243,6 +243,12 @@ describe('stripStructureSymbols', () => {
     expect(stripStructureSymbols('word►"quoted"').text).toBe('word "quoted"');
   });
 
+  test('leaves a space before a straight quote that opens markup', () => {
+    expect(stripStructureSymbols('said►"{L:x<SDBH:y>}"').text).toBe('said "{L:x<SDBH:y>}"');
+    expect(stripStructureSymbols('word►"|ison|i*"').text).toBe('word "|ison|i*"');
+    expect(stripStructureSymbols("word►'{L:x<SDBH:y>}'").text).toBe("word '{L:x<SDBH:y>}'");
+  });
+
   test('treats italic, underline and bold markup as the start or end of a word', () => {
     expect(stripStructureSymbols('beetles;◄ |iUpupa epops|i*').text).toBe(
       'beetles; |iUpupa epops|i*'
@@ -367,6 +373,7 @@ const noLetters = {
   singleMeaning: 0,
   outOfRange: 0,
   notOutput: 0,
+  ownLinkReplaced: 0,
   linkedReplaced: 0,
   linkedUnresolved: 0,
   linkedNoMeaning: 0,
@@ -932,6 +939,61 @@ describe('cleanUpDefinitions', () => {
       const { definition, report } = clean('{L:x<SDBG:missing:000000>}[a]');
       expect(definition).toBe('{L:x<SDBG:missing:000000>}[a]');
       expect(report.byLanguage.en.meaningLetters.linkedUnresolved).toBe(1);
+    });
+  });
+
+  describe('a meaning letter before a link to its own entry', () => {
+    // Entry "φέρω" has one base form with three output meanings; "ἄλλος" is another entry
+    function clean(definition: string) {
+      const senses = ['m0', 'm1', 'm2'].map(id => sense(id, id === 'm2' ? definition : 'meaning'));
+      const entriesByLanguage = {
+        en: {
+          φέρω: { id: 'entry-1', lemma: 'φέρω', senses },
+          ἄλλος: { id: 'entry-2', lemma: 'ἄλλος', senses: [sense('a0', 'other')] },
+        },
+      };
+      const report = cleanUpDefinitions({
+        dictionaryId: 'SDBG',
+        entriesByLanguage,
+        sourceEntries: [entry('1', 'φέρω'), entry('2', 'ἄλλος')],
+        baseFormMeaningCountBySenseId: new Map([
+          ['m0', 3],
+          ['m1', 3],
+          ['m2', 3],
+          ['a0', 1],
+        ]),
+        meaningSenseIdsByEntryId: new Map([
+          ['1', [['m0', 'm1', 'm2']]],
+          ['2', [['a0']]],
+        ]),
+      });
+      return { definition: entriesByLanguage.en.φέρω.senses[2].definition, report };
+    }
+
+    test("numbers a letter after another form of the entry by the link's meaning position", () => {
+      const { definition, report } = clean(
+        'extension of φέρομαι[a] ‘to eat one’s fill,’ {L:φέρω<SDBG:φέρω:000001>}'
+      );
+      expect(definition).toBe(
+        'extension of φέρομαι(2) ‘to eat one’s fill,’ {L:φέρω<SDBG:φέρω:000001>}'
+      );
+      expect(report.byLanguage.en.meaningLetters).toMatchObject({ ownLinkReplaced: 1 });
+    });
+
+    test.each([
+      ['the word is the entry’s lemma', 'φέρω[a] ‘x,’ {L:φέρω<SDBG:φέρω:000001>}'],
+      ['the word is another entry’s lemma', 'ἄλλος[a] ‘x,’ {L:φέρω<SDBG:φέρω:000001>}'],
+      ['the word is not Greek or Hebrew', 'lak}[a] ‘x,’ {L:φέρω<SDBG:φέρω:000001>}'],
+      ['the link is to another entry', 'φέρομαι[a] ‘x,’ {L:ἄλλος<SDBG:ἄλλος:000001>}'],
+      ['other words stand before the link', 'φέρομαι[a] differs from {L:φέρω<SDBG:φέρω:000001>}'],
+      ['the link names no meaning position', 'φέρομαι[a] ‘x,’ {L:φέρω<SDBG:φέρω>}'],
+    ])('numbers the letter by its own base form when %s', (_, definition) => {
+      const { definition: cleaned, report } = clean(definition);
+      expect(cleaned).toBe(definition.replace('[a]', '(1)'));
+      expect(report.byLanguage.en.meaningLetters).toMatchObject({
+        ownLinkReplaced: 0,
+        replaced: 1,
+      });
     });
   });
 

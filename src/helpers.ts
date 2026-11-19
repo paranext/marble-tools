@@ -750,6 +750,7 @@ export function errorReport(error: unknown): string {
   while (innermost instanceof Error && innermost.cause !== undefined) innermost = innermost.cause;
   const message = errorMessage(error);
   if (innermost instanceof Error && innermost.constructor !== Error && innermost.stack)
-    return `${message}\n${innermost.stack}`;
+    // The stack starts with the error's own message, so an error without a cause prints it once
+    return innermost === error ? innermost.stack : `${message}\n${innermost.stack}`;
   return message;
 }

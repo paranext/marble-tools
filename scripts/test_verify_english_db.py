@@ -521,6 +521,7 @@ class DefinitionTextTests(unittest.TestCase):
             '{S:042001001000022}',
             '{S:}',
             '{S:00101903800100 01300301900000000}',
+            '{S:042001001000022 (unclosed)',
         ):
             with self.subTest(marker=marker):
                 failures = self.check({'a': (f'x {marker}', ['g'])}, {'a': ('x', ['g'])})

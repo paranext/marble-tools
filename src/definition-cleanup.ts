@@ -222,9 +222,10 @@ const STRAIGHT_QUOTE_REGEX = /["']/;
 
 /**
  * The start of a word: a letter, digit, opening bracket or curly quote, opening format markup, or a
- * straight quote directly followed by a letter or digit
+ * straight quote directly followed by a letter, digit, `{X:` marker or opening format markup
  */
-const WORD_START_REGEX = /^(?:[\p{L}\p{M}\p{N}({[“‘«]|\|[iub](?!\*)|["'][\p{L}\p{M}\p{N}])/u;
+const WORD_START_REGEX =
+  /^(?:[\p{L}\p{M}\p{N}({[“‘«]|\|[iub](?!\*)|["'](?:[\p{L}\p{M}\p{N}]|\{[A-Z]:|\|[iub](?!\*)))/u;
 
 /** Text ending in markup that opens: a `{X:` marker, or format markup such as `|i` */
 const OPENING_MARKUP_END_REGEX = /(?:\{[A-Z]:|\|[iub])$/;
@@ -265,7 +266,7 @@ function arrowReplacement(before: string, after: string): string {
     return '';
   if (!WORD_START_REGEX.test(after)) return '';
   // An apostrophe between two letters belongs to the word before it, as in "priest's"
-  if (after.startsWith("'") && /[\p{L}\p{M}\p{N}]/u.test(previous)) return '';
+  if (/^'[\p{L}\p{M}\p{N}]/u.test(after) && /[\p{L}\p{M}\p{N}]/u.test(previous)) return '';
   if (NO_SPACE_SCRIPT_REGEX.test(previous) || NO_SPACE_SCRIPT_REGEX.test(next)) return '';
   return ' ';
 }
@@ -398,6 +399,11 @@ export interface MeaningLetterCounts {
   outOfRange: number;
   /** Letters not after a link that were left because the meaning they name is not output */
   notOutput: number;
+  /**
+   * Letters not after a link that were numbered by the meaning position of a link to their own
+   * entry that follows them
+   */
+  ownLinkReplaced: number;
   /** Letters after a link that were numbered by the linked entry */
   linkedReplaced: number;
   /** Letters after a link that were left because the link does not resolve to an output entry */
@@ -444,10 +450,43 @@ export type LinkedMeaningNumber = (
 export type OwnMeaningNumber = (meaningIndex: number) => number | 'noMeaning';
 
 /**
+ * Finds the number the Dictionary panel shows for the meaning a link names by its meaning position
+ * (`:BBBMMM`), for a meaning letter that follows `word` and precedes the link. Returns `undefined`
+ * when the link does not resolve to the entry whose definition is being cleaned up, names no meaning
+ * position or a meaning that is not output, or when `word` is that entry's lemma or names another
+ * entry: then the link is not the letter's own (its meaning position can differ from the letter).
+ */
+export type OwnLinkPositionNumber = (target: LinkTarget, word: string) => number | undefined;
+
+/**
  * A cross-reference directly followed by a meaning letter, or a meaning letter on its own. The link
  * part matches the same links as `CROSS_REFERENCE_REGEX`.
  */
 const LETTER_AFTER_LINK_REGEX = /\{L:[^<}]*<([A-Za-z-]+):([^>}]*)>\}\[([a-z])\]|\[([a-z])\]/g;
+
+/**
+ * What can follow a meaning letter before the link that names the same meaning: an optional quoted
+ * gloss, which may itself contain an apostrophe, then an optional comma, then the link, as in
+ * `φέρομαι[a] ‘to move from one place to another,’ {L:φέρω<SDBG:φέρω:000014>}`
+ */
+const LINK_AFTER_LETTER_REGEX =
+  /^(?:,?\s*(?:‘[^{}]*?’|“[^{}]*?”|'[^{}]*?'|"[^{}]*?"))?,?\s*\{L:[^<}]*<([A-Za-z-]+):([^>}]*)>\}/;
+
+/**
+ * The Greek or Hebrew word directly before a meaning letter, allowing one space or a closing `}`
+ * after it. A word in the definition's own language is never a form of an entry.
+ */
+const WORD_BEFORE_LETTER_REGEX = /([\p{Script=Greek}\p{Script=Hebrew}\p{M}]+)\}?\s?$/u;
+
+/** Splits a cross-reference target into its lemma and its optional `:BBBMMM` meaning position */
+function toLinkTarget(dictionaryId: string, rawTarget: string): LinkTarget {
+  const position = TARGET_POSITION_REGEX.exec(rawTarget)?.[0] ?? '';
+  return {
+    dictionaryId,
+    lemma: rawTarget.slice(0, rawTarget.length - position.length),
+    position: position.slice(1),
+  };
+}
 
 /** Meaning-letter counts that are all zero */
 function emptyMeaningLetterCounts(): MeaningLetterCounts {
@@ -456,6 +495,7 @@ function emptyMeaningLetterCounts(): MeaningLetterCounts {
     singleMeaning: 0,
     outOfRange: 0,
     notOutput: 0,
+    ownLinkReplaced: 0,
     linkedReplaced: 0,
     linkedUnresolved: 0,
     linkedNoMeaning: 0,
@@ -471,6 +511,12 @@ function emptyMeaningLetterCounts(): MeaningLetterCounts {
  * A letter directly after a cross-reference is numbered by `linkedMeaningNumber`; it is left as it
  * is when that returns no number, or when none is given.
  *
+ * A letter that follows a word that is not a lemma, such as a middle-voice form (`φέρομαι[a]` in
+ * φέρω), and is followed, after at most a quoted gloss and a comma, by a link to the definition's
+ * own entry is numbered by the meaning position that link names, as `ownLinkPositionNumber` gives
+ * it. The form's meanings can come later in the entry, so the letter's position in the alphabet
+ * does not say which meaning it is.
+ *
  * Any other letter is numbered when Paratext 9 numbers it: only when the base form whose definition
  * it is has more than one lexical meaning (counting meanings that are not output), and the letter's
  * position is within that count. The number is the one `ownMeaningNumber` gives, which is the
@@ -485,7 +531,8 @@ export function replaceMeaningLetters(
   text: string,
   baseFormMeaningCount: number,
   linkedMeaningNumber?: LinkedMeaningNumber,
-  ownMeaningNumber?: OwnMeaningNumber
+  ownMeaningNumber?: OwnMeaningNumber,
+  ownLinkPositionNumber?: OwnLinkPositionNumber
 ): MeaningLetterCounts & { text: string } {
   const counts = emptyMeaningLetterCounts();
   const alphabetPosition = (letter: string) => letter.charCodeAt(0) - 'a'.charCodeAt(0) + 1;
@@ -496,15 +543,12 @@ export function replaceMeaningLetters(
       dictionaryId: string | undefined,
       rawTarget: string | undefined,
       linkLetter: string | undefined,
-      bareLetter: string | undefined
+      bareLetter: string | undefined,
+      offset: number,
+      whole: string
     ) => {
       if (linkLetter !== undefined && dictionaryId !== undefined && rawTarget !== undefined) {
-        const position = TARGET_POSITION_REGEX.exec(rawTarget)?.[0] ?? '';
-        const target: LinkTarget = {
-          dictionaryId,
-          lemma: rawTarget.slice(0, rawTarget.length - position.length),
-          position: position.slice(1),
-        };
+        const target = toLinkTarget(dictionaryId, rawTarget);
         const meaningIndex = alphabetPosition(linkLetter) - 1;
         const number = linkedMeaningNumber?.(target, meaningIndex) ?? 'unresolved';
         if (number === 'unresolved') {
@@ -521,6 +565,16 @@ export function replaceMeaningLetters(
         else counts.linkedPositionDiffers++;
         // The letter is the match's last three characters
         return `${match.slice(0, match.length - 3)}(${number})`;
+      }
+      const followingLink = LINK_AFTER_LETTER_REGEX.exec(whole.slice(offset + match.length));
+      const wordBefore = WORD_BEFORE_LETTER_REGEX.exec(whole.slice(0, offset))?.[1];
+      const ownLinkNumber =
+        followingLink &&
+        wordBefore !== undefined &&
+        ownLinkPositionNumber?.(toLinkTarget(followingLink[1], followingLink[2]), wordBefore);
+      if (ownLinkNumber) {
+        counts.ownLinkReplaced++;
+        return `(${ownLinkNumber})`;
       }
       const position = alphabetPosition(bareLetter ?? '');
       if (baseFormMeaningCount <= 1) {
@@ -819,6 +873,25 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
         return number === -1 ? 'noMeaning' : number + 1;
       };
 
+      // The number of the meaning a link to this entry names by its meaning position
+      const ownLinkPositionNumber: OwnLinkPositionNumber = (target, word) => {
+        if (target.position.length < 3) return undefined;
+        if (target.dictionaryId.toUpperCase() !== dictionaryId.toUpperCase()) return undefined;
+        const found = lookup(target.lemma);
+        if (found.kind !== 'found' || entry.id !== `${ENTRY_PREFIX}${found.entry.id}`)
+          return undefined;
+        // The word must be another form of this entry, not its lemma or another entry's
+        const foundWord = lookup(word);
+        if (foundWord.kind === 'ambiguous') return undefined;
+        if (
+          foundWord.kind === 'found' &&
+          (foundWord.entry.id !== found.entry.id || foundWord.step !== 'alternateLemma')
+        )
+          return undefined;
+        const number = linkedMeaningNumber(target, Number(target.position.slice(-3)));
+        return typeof number === 'number' ? number : undefined;
+      };
+
       // Rewrites over-long Bible references in a definition or gloss and records them
       const fixBibleReferences = (text: string, field: BibleReferenceProblem['field']): string => {
         const result = rewriteOverlongBibleReferences(text);
@@ -866,7 +939,8 @@ export function cleanUpDefinitions(input: DefinitionCleanupInput): DefinitionCle
           stripped.text,
           baseFormMeaningCountBySenseId.get(sense.id) ?? 0,
           linkedMeaningNumber,
-          ownMeaningNumber
+          ownMeaningNumber,
+          ownLinkPositionNumber
         );
         for (const key of Object.keys(counts.meaningLetters) as (keyof MeaningLetterCounts)[])
           counts.meaningLetters[key] += lettered[key];

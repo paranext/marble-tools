@@ -18,6 +18,14 @@ describe('errorReport', () => {
     expect(report).toMatch(/^\s+at /m);
   });
 
+  test('prints the message of an unexpected error with no cause once, with its stack', () => {
+    const error = new TypeError("Cannot read properties of undefined (reading 'id')");
+    const report = errorReport(error);
+
+    expect(report.split('Cannot read properties').length - 1).toBe(1);
+    expect(report).toMatch(/^\s+at /m);
+  });
+
   test('prints a thrown value that is not an error', () => {
     expect(errorReport('just text')).toBe('just text');
   });

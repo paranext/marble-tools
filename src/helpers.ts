@@ -5,6 +5,8 @@
  * NOTE: Most code in this file is AI generated. Some human adjustments were made.
  */
 
+import { DOMParser } from '@xmldom/xmldom';
+
 // Define all constants in a single place
 export const DICTIONARY_TYPE = {
   GREEK: 'SDBG',
@@ -21,10 +23,9 @@ export const CORPUS_ID = {
   HEBREW: 'UBSBHS4',
 };
 
-// Define the minimum versions for using lexical and contextual meanings
+// Define the minimum entry version for using lexical meanings
 export const ENTRY_VERSION = {
   MIN_LEXICAL: 3,
-  MIN_CONTEXTUAL: 5,
 };
 
 export const SENSE_PREFIX = 'sense-';
@@ -287,96 +288,34 @@ export const bookCodeToNumber: Record<string, number> = {
 };
 
 /**
- * Condenses sense IDs that follow a hierarchical pattern.
- * Handles two types of patterns:
- * 1. Equal-length segments where parent IDs end with zeros and child IDs extend by replacing zeros with non-zero digits
- * 2. Different-length segments where later segments should be applied from the right-hand side
- *    ONLY if later segments are the same length or shorter than the previous length
- * Returns the condensed ID or the original ID if it doesn't match a known pattern.
+ * Builds a sense ID from the owning `Lexicon_Entry` ID and the ID of the `LEXMeaning` the sense
+ * comes from.
+ *
+ * The result is `sense-` followed by 15 digits: the entry number (the first 6 digits of the entry
+ * ID) and the last 9 digits of the meaning ID. The source data writes meaning IDs either as 15
+ * digits (entry number + 9) or as the bare 9 digits, and both forms give the same sense ID.
+ * A lexical meaning's 9 digits end in `000`; this is not checked.
+ *
+ * Throws if either ID is not all digits or has the wrong length, or if a 15-digit meaning ID
+ * starts with a different entry number than the entry, so a malformed or misplaced ID stops the
+ * conversion instead of producing a bad sense ID.
  */
-export function condenseSenseId(id: string): string {
-  if (!id || !id.startsWith(SENSE_PREFIX)) return id;
-
-  // Split the ID by hyphens
-  const parts = id.split('-');
-
-  // If we have less than 2 parts (e.g., "sense-12345"), just return the original ID
-  if (parts.length < 2) return id;
-
-  // Collect all numeric parts after "sense-"
-  const numericParts = parts.slice(1);
-
-  // Check if all parts are numeric
-  if (!numericParts.every(part => /^\d+$/.test(part))) return id;
-
-  // Check for pattern 1: same-length segments with hierarchical zeros
-  if (numericParts.every(part => part.length === numericParts[0].length)) {
-    let isHierarchical = true;
-
-    // Check the hierarchical digit pattern
-    for (let i = 1; i < numericParts.length; i++) {
-      const prevPart = numericParts[i - 1];
-      const currPart = numericParts[i];
-
-      // Find the first position where the parts differ
-      let diffPos = 0;
-      while (diffPos < prevPart.length && prevPart[diffPos] === currPart[diffPos]) {
-        diffPos++;
-      }
-
-      // Now check if all remaining digits in prevPart are zeros
-      // and currPart has at least one non-zero digit in those positions
-      let allZerosInPrev = true;
-      let hasNonZeroInCurr = false;
-
-      for (let j = diffPos; j < prevPart.length; j++) {
-        if (prevPart[j] !== '0') {
-          allZerosInPrev = false;
-          break;
-        }
-        if (currPart[j] !== '0') {
-          hasNonZeroInCurr = true;
-        }
-      }
-
-      if (!allZerosInPrev || !hasNonZeroInCurr) {
-        isHierarchical = false;
-        break;
-      }
-    }
-
-    // If hierarchical, return only "sense-" plus the last part
-    if (isHierarchical && numericParts.length > 0) {
-      return `${SENSE_PREFIX}${numericParts[numericParts.length - 1]}`;
-    }
+export function buildSenseId(entryId: string, meaningId: string): string {
+  if (!/^\d{6,}$/.test(entryId)) {
+    throw new Error(`Cannot build a sense ID: entry ID "${entryId}" is not at least 6 digits`);
   }
-  // Check for pattern 2: different-length segments applied from right to left
-  else if (numericParts.length >= 2) {
-    // Start with the base (first) numeric part
-    let result = numericParts[0];
-
-    // Check if any later segment is longer than its previous segment
-    for (let i = 1; i < numericParts.length; i++) {
-      if (numericParts[i].length > numericParts[i - 1].length) {
-        // If any later segment is longer than its previous segment, return the original ID
-        return id;
-      }
-    }
-
-    // Process each subsequent part by overlaying it from the right
-    for (let i = 1; i < numericParts.length; i++) {
-      const currentPart = numericParts[i];
-
-      // Replace the rightmost digits of result with the current part
-      const overlayPosition = result.length - currentPart.length;
-      result = result.substring(0, overlayPosition) + currentPart;
-    }
-
-    return `${SENSE_PREFIX}${result}`;
+  if (!/^(\d{9}|\d{15})$/.test(meaningId)) {
+    throw new Error(
+      `Cannot build a sense ID: meaning ID "${meaningId}" is not 9 or 15 digits (entry ID "${entryId}")`
+    );
   }
-
-  // If no pattern matches, return the original ID
-  return id;
+  const entryNumber = entryId.substring(0, 6);
+  if (meaningId.length === 15 && meaningId.substring(0, 6) !== entryNumber) {
+    throw new Error(
+      `Cannot build a sense ID: meaning ID "${meaningId}" starts with a different entry number than entry ID "${entryId}"`
+    );
+  }
+  return `${SENSE_PREFIX}${entryNumber}${meaningId.slice(-9)}`;
 }
 
 /**
@@ -498,6 +437,75 @@ export function marbleLinkIdToU23003(id: string): string {
 }
 
 /**
+ * The occurrences a lexical meaning's `LEXReference`s yield, and the references that yield none,
+ * grouped by why they were skipped.
+ */
+export interface LexReferenceOccurrences {
+  /** U23003 occurrences, each once, in source order */
+  occurrences: string[];
+  /** References whose first 14 characters are not 14 digits */
+  invalid: string[];
+  /** References with an odd word ID: readings from the critical apparatus, not in the base text */
+  odd: string[];
+  /** References to word 0, which point at a verse (such as a book title) rather than a word */
+  wordZero: string[];
+  /** References whose book number has no book code */
+  unknownBook: string[];
+}
+
+/** The first 14 digits of a reference; trailing notes such as `{N:001}` and whitespace are ignored */
+const reference14 = (reference: string): string => reference.trim().substring(0, 14);
+
+/**
+ * Converts the text of a lexical meaning's `LEXReference` elements into U23003 occurrences.
+ *
+ * Each reference is a 14-digit ID (BBBCCCVVVPPWWW, the same format as a MARBLELink ID), which may
+ * be followed by a note such as `{N:001}`; only the first 14 characters are used. References that
+ * cannot be shown as a word in the base text are skipped and returned by class, with the first 14
+ * characters of each (or the whole trimmed text for an invalid one).
+ */
+export function occurrencesFromLexReferences(references: string[]): LexReferenceOccurrences {
+  const result: LexReferenceOccurrences = {
+    occurrences: [],
+    invalid: [],
+    odd: [],
+    wordZero: [],
+    unknownBook: [],
+  };
+  const seen = new Set<string>();
+
+  for (const reference of references) {
+    const trimmed = reference.trim();
+    const id = reference14(reference);
+    if (!/^\d{14}$/.test(id)) {
+      result.invalid.push(trimmed);
+      continue;
+    }
+    // An unknown book is a data error even when the word ID is odd, so it is checked first
+    if (!bookMap[id.substring(0, 3)]) {
+      result.unknownBook.push(id);
+      continue;
+    }
+    // From Reinier: odd reference IDs refer to cases in the apparatus, which means that these words
+    // are not in the text.
+    if (!['0', '2', '4', '6', '8'].includes(id[13])) {
+      result.odd.push(id);
+      continue;
+    }
+    if (id.substring(11) === '000') {
+      result.wordZero.push(id);
+      continue;
+    }
+    const occurrence = marbleLinkIdToU23003(id);
+    if (seen.has(occurrence)) continue;
+    seen.add(occurrence);
+    result.occurrences.push(occurrence);
+  }
+
+  return result;
+}
+
+/**
  * Gets the numeric book code for a given 3-letter book abbreviation.
  * Used for efficient storage and indexing of scripture references.
  *
@@ -542,4 +550,207 @@ export function parseU23003Reference(reference: string): {
   const wordNum = parseInt(match[4], 10);
 
   return { bookNum, chapterNum, verseNum, wordNum };
+}
+
+/**
+ * The set of comparison keys of a lexical meaning's references, built once and used to check each
+ * of its contextual meanings with `findConReferencesMissingFromLex`.
+ */
+export function referenceKeys(references: string[]): Set<string> {
+  return new Set(references.map(reference14));
+}
+
+/**
+ * Returns the contextual-meaning references (`CONReference`) that are missing from the lexical
+ * references (`LEXReferences`) of the lexical meaning they belong to, given as the `referenceKeys`
+ * of those references. Only the first 14 digits of each reference are compared; trailing notes such
+ * as `{N:001}` and whitespace are ignored.
+ */
+export function findConReferencesMissingFromLex(
+  conReferences: string[],
+  lexReferenceKeys: ReadonlySet<string>
+): string[] {
+  return conReferences.map(reference14).filter(reference => !lexReferenceKeys.has(reference));
+}
+
+/**
+ * Throws if the start and end tags of the XML are not properly nested. xmldom does not report a
+ * mismatched or missing end tag (`<a>text</b>`, or an end tag for an outer element while an inner
+ * one is still open), it quietly repairs the tree, so this checks the tag structure on its own.
+ * Comments, CDATA sections, processing instructions, the DOCTYPE and self-closing tags are skipped.
+ */
+export function checkTagBalance(xml: string, sourceName: string): void {
+  const fail = (message: string, position: number): never => {
+    const line = xml.substring(0, position).split('\n').length;
+    throw new Error(`Invalid XML in ${sourceName}: ${message} (line ${line})`);
+  };
+  const skipPast = (terminator: string, from: number, what: string): number => {
+    const end = xml.indexOf(terminator, from);
+    if (end === -1) return fail(`unterminated ${what}`, from);
+    return end + terminator.length;
+  };
+
+  const open: { name: string; position: number }[] = [];
+  let i = 0;
+  while (i < xml.length) {
+    const lt = xml.indexOf('<', i);
+    if (lt === -1) break;
+    if (xml.startsWith('<!--', lt)) {
+      i = skipPast('-->', lt + 4, 'comment');
+    } else if (xml.startsWith('<![CDATA[', lt)) {
+      i = skipPast(']]>', lt + 9, 'CDATA section');
+    } else if (xml.startsWith('<?', lt)) {
+      i = skipPast('?>', lt + 2, 'processing instruction');
+    } else if (xml.startsWith('<!', lt)) {
+      // DOCTYPE: ends at the first '>' outside an internal subset in square brackets
+      let depth = 0;
+      let j = lt + 2;
+      while (j < xml.length && !(xml[j] === '>' && depth === 0)) {
+        if (xml[j] === '[') depth += 1;
+        else if (xml[j] === ']') depth -= 1;
+        j += 1;
+      }
+      if (j >= xml.length) fail('unterminated declaration', lt);
+      i = j + 1;
+    } else {
+      // A start or end tag: find its closing '>', skipping any '>' inside quoted attribute values
+      let j = lt + 1;
+      let quote = '';
+      while (j < xml.length && (quote || xml[j] !== '>')) {
+        if (quote) {
+          if (xml[j] === quote) quote = '';
+        } else if (xml[j] === '"' || xml[j] === "'") {
+          quote = xml[j];
+        }
+        j += 1;
+      }
+      if (j >= xml.length) fail('unterminated tag', lt);
+      const body = xml.substring(lt + 1, j);
+      i = j + 1;
+
+      if (body.startsWith('/')) {
+        const name = body.substring(1).trim();
+        const top = open.pop();
+        if (!top) fail(`end tag </${name}> has no matching start tag`, lt);
+        else if (top.name !== name) {
+          fail(
+            `end tag </${name}> does not match start tag <${top.name}> from line ${
+              xml.substring(0, top.position).split('\n').length
+            }`,
+            lt
+          );
+        }
+      } else if (!body.endsWith('/')) {
+        const name = /^[^\s/]+/.exec(body)?.[0];
+        if (!name) fail('tag without a name', lt);
+        else open.push({ name, position: lt });
+      }
+    }
+  }
+
+  const unclosed = open.pop();
+  if (unclosed) fail(`start tag <${unclosed.name}> is never closed`, unclosed.position);
+}
+
+/**
+ * Parses XML text, throwing on any well-formedness error that xmldom or the tag-balance check
+ * detects. xmldom's default handler only logs errors and returns a partial document, which would
+ * silently drop the data after the error, and it does not report mismatched end tags at all, so the
+ * tag structure is checked separately by `checkTagBalance`. xmldom warnings, errors and fatal
+ * errors all fail the parse. This is not a full validator: it does not check, for example, that
+ * attribute values or entity references are valid.
+ */
+export function parseXmlStrict(xml: string, sourceName: string): Document {
+  const fail = (message: string) => {
+    throw new Error(`Invalid XML in ${sourceName}: ${message.trim()}`);
+  };
+  checkTagBalance(xml, sourceName);
+  return new DOMParser({
+    locator: {},
+    errorHandler: {
+      warning: fail,
+      error: fail,
+      fatalError: fail,
+    },
+  }).parseFromString(xml, 'text/xml');
+}
+
+/**
+ * Parses the `Version` attribute of a `Lexicon_Entry`. Throws if it is missing or not a whole
+ * number, because a version that reads as NaN would compare as "not below the minimum" and let a
+ * malformed entry through.
+ */
+export function parseEntryVersion(rawVersion: string | null | undefined, entryId: string): number {
+  const trimmed = (rawVersion ?? '').trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(`Entry ${entryId} has a missing or non-numeric Version: "${rawVersion ?? ''}"`);
+  }
+  return parseInt(trimmed, 10);
+}
+
+/**
+ * Converts an internal entry or sense ID to the ID that is written to the output:
+ * - An entry ID (`entry-` followed by the source entry ID) becomes the 6-digit entry number.
+ * - A sense ID (`sense-` followed by 15 digits) becomes those 15 digits: the entry number followed
+ *   by the 9 digits of the lexical meaning's ID.
+ * Any other ID is returned as is.
+ */
+export function cleanId(id: string): string {
+  if (id.startsWith(ENTRY_PREFIX))
+    return id.substring(ENTRY_PREFIX.length, ENTRY_PREFIX.length + 6);
+  if (id.startsWith(SENSE_PREFIX))
+    return id.substring(SENSE_PREFIX.length, SENSE_PREFIX.length + 15);
+  return id;
+}
+
+/**
+ * Verifies that entry IDs and sense IDs are unique within each language, as they are written to
+ * the output (entries by their 6-digit entry number). Throws on a duplicate so the conversion
+ * fails instead of dropping or merging a meaning.
+ */
+export function verifyUniqueEntryAndSenseIds(
+  entriesByLanguage: Record<string, Record<string, { id: string; senses: { id: string }[] }>>
+): void {
+  for (const language of Object.keys(entriesByLanguage)) {
+    const entryIds = new Set<string>();
+    const senseIds = new Set<string>();
+
+    for (const entry of Object.values(entriesByLanguage[language])) {
+      const outputEntryId = cleanId(entry.id);
+      if (entryIds.has(outputEntryId)) {
+        throw new Error(
+          `Duplicate entry ID found in language '${language}': ${outputEntryId} (from ${entry.id})`
+        );
+      }
+      entryIds.add(outputEntryId);
+
+      for (const sense of entry.senses) {
+        const outputSenseId = cleanId(sense.id);
+        if (senseIds.has(outputSenseId)) {
+          throw new Error(`Duplicate sense ID found in language '${language}': ${outputSenseId}`);
+        }
+        senseIds.add(outputSenseId);
+      }
+    }
+  }
+}
+
+/** The message of a thrown value, which is not necessarily an `Error` */
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * What a command-line tool prints for a failure: its message, followed by the stack of the innermost
+ * `cause` when that is an unexpected JavaScript error such as a `TypeError`. The tools' own data
+ * errors are plain `Error`s whose message says everything, so they print without a stack.
+ */
+export function errorReport(error: unknown): string {
+  let innermost = error;
+  while (innermost instanceof Error && innermost.cause !== undefined) innermost = innermost.cause;
+  const message = errorMessage(error);
+  if (innermost instanceof Error && innermost.constructor !== Error && innermost.stack)
+    // The stack starts with the error's own message, so an error without a cause prints it once
+    return innermost === error ? innermost.stack : `${message}\n${innermost.stack}`;
+  return message;
 }

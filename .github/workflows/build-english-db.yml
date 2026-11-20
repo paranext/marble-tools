@@ -4,6 +4,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      lexicon-ref:
+        description: 'marble-lexicon commit to build from (default: its latest commit)'
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -25,14 +30,18 @@ jobs:
       # Runs after npm ci so dependency install scripts can't read the token that git clone
       # stores in the cloned repos' .git/config
       - name: Clone private repositories
+        env:
+          LEXICON_REF: ${{ inputs.lexicon-ref }}
         run: |
           git clone https://${{ secrets.MARBLE_REPO_TOKEN }}@github.com/ubsicap/marble-lexicon.git ../marble-lexicon
-          git clone https://${{ secrets.MARBLE_REPO_TOKEN }}@github.com/ubsicap/marble-indexes.git ../marble-indexes
+          if [ -n "$LEXICON_REF" ]; then git -C ../marble-lexicon checkout --detach "$LEXICON_REF"; fi
 
       - name: Convert SDBG lexicon
+        id: convert-sdbg
         run: npm run convert-sdbg
 
       - name: Convert SDBH lexicon
+        id: convert-sdbh
         run: npm run convert-sdbh
 
       - name: Create English directory and copy files
@@ -42,19 +51,57 @@ jobs:
           cp output-sdbh/lexicon_en.xml english/sdbh_en.xml
 
       - name: Import to SQLite
+        id: import
         run: npm run import-english-to-sqlite
+
+      - name: Download the published English database
+        run: |
+          mkdir -p previous-db
+          # media.githubusercontent.com serves the Git LFS object; raw.githubusercontent.com would return the LFS pointer.
+          curl -fsSL -o previous-db/lexical.db.xz https://media.githubusercontent.com/media/paranext/dependencies/main/lexical-db/lexical.db.xz
+          xz -d previous-db/lexical.db.xz
+
+      - name: Verify English database
+        id: verify
+        run: python3 scripts/verify_english_db.py --db english.db --lexicon ../marble-lexicon --previous-db previous-db/lexical.db
+
+      # build-info.json travels with the database into paranext/dependencies, which keeps it as the
+      # lasting record of this build (this run's logs and artifacts expire)
+      - name: Record where the English database came from
+        id: build-info
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PULL_REQUEST_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/write_build_info.py --db english.db --lexicon ../marble-lexicon --output build-info.json --run-url "$RUN_URL" --pull-request-head "$PULL_REQUEST_HEAD"
 
       - name: Upload English database
         uses: actions/upload-artifact@v4
         with:
           name: english-database
-          path: english.db
+          path: |
+            english.db
+            build-info.json
           retention-days: 90
 
-      - name: Upload XML files
+      # A database that was not verified (a step failed or was skipped, or the run was cancelled) is
+      # kept for investigation under a name that says so. A failed upload is not a failed database.
+      - name: Upload unverified English database
+        if: always() && steps.verify.outcome != 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: xml-files
+          name: english-database-unverified
+          path: |
+            english.db
+            build-info.json
+          if-no-files-found: ignore
+          retention-days: 90
+
+      # The XML of a run whose database was not verified is named so, like its database
+      - name: Upload XML files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.verify.outcome == 'success' && 'xml-files' || 'xml-files-unverified' }}
           path: |
             output-sdbg/*.xml
             output-sdbh/*.xml

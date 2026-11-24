@@ -8,3 +8,11 @@ dist
 # Files
 english.db
 lexicon.db
+
+# Python
+__pycache__
+
+# Databases built locally, and the workflow's download of the published one
+*.db
+*.db.tmp
+previous-db/

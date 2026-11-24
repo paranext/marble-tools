@@ -1,6 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import { DOMParser } from '@xmldom/xmldom';
 // TODO: Replace sqlite3 and sqlite with the built-in node:sqlite module, then remove sqlite3,
 // sqlite, @types/sqlite3 and scripts/ensure-sqlite3.js. The native sqlite3 addon is what brings in
 // the glibc rebuild and the prebuild-install/node-gyp dependency chain. On Node 22, node:sqlite
@@ -8,7 +7,7 @@ import { DOMParser } from '@xmldom/xmldom';
 import sqlite3 from 'sqlite3';
 import { open, Database } from 'sqlite';
 import { Command } from 'commander';
-import { parseU23003Reference } from './helpers';
+import { errorMessage, errorReport, parseU23003Reference, parseXmlStrict } from './helpers';
 
 // Cache objects to reduce database lookups
 interface ForeignKeyCache {
@@ -34,6 +33,10 @@ program
 
 const options = program.opts();
 const verbose = options.verbose || false;
+
+// The database is built here and moved to the output path only after a successful import, so a
+// failed import never leaves a partial database at the output path.
+const tempOutput = `${options.output}.tmp`;
 
 // Helper function to log detailed error information
 function logError(error: unknown, context: string, details: Record<string, unknown> = {}): void {
@@ -71,7 +74,7 @@ function findChildElementByName(parentElement: Element, name: string): Element |
 }
 
 async function initializeDatabase(dbPath: string, schemaPath: string): Promise<Database> {
-  // Delete existing db file if it exists
+  // Remove a leftover file from an earlier failed run so the import starts from an empty database
   if (fs.existsSync(dbPath)) {
     fs.unlinkSync(dbPath);
   }
@@ -159,28 +162,20 @@ async function insert(
   tableName: string,
   columnsAndValues: Record<string, unknown>
 ): Promise<sqlite3.RunResult> {
-  try {
-    // Extract columns and ensure values are in matching order
-    const columns = Object.keys(columnsAndValues);
-    const values = columns.map(col => columnsAndValues[col]);
+  // Extract columns and ensure values are in matching order
+  const columns = Object.keys(columnsAndValues);
+  const values = columns.map(col => columnsAndValues[col]);
 
-    // Build the INSERT statement
-    const columnList = columns.join(', ');
-    const placeholders = columns.map(() => '?').join(', ');
-    const sql = `INSERT OR IGNORE INTO ${tableName} (${columnList}) VALUES (${placeholders})`;
+  // Build the INSERT statement
+  const columnList = columns.join(', ');
+  const placeholders = columns.map(() => '?').join(', ');
+  const sql = `INSERT OR IGNORE INTO ${tableName} (${columnList}) VALUES (${placeholders})`;
 
-    // Perform the insert
-    return safeRun(db, sql, values, `Insert ${tableName}`, {
-      tableName,
-      columnsAndValues,
-    });
-  } catch (error: unknown) {
-    console.error(
-      `Error in insert for ${tableName}:`,
-      error instanceof Error ? error.message : error
-    );
-    throw error;
-  }
+  // Perform the insert
+  return safeRun(db, sql, values, `Insert ${tableName}`, {
+    tableName,
+    columnsAndValues,
+  });
 }
 
 // Bulk insert helper function
@@ -211,29 +206,21 @@ async function getKey(
   columnsAndValues: Record<string, unknown>,
   context: string
 ): Promise<number> {
-  try {
-    // Extract columns and ensure values are in matching order
-    const columns = Object.keys(columnsAndValues);
-    const values = columns.map(col => columnsAndValues[col]);
+  // Extract columns and ensure values are in matching order
+  const columns = Object.keys(columnsAndValues);
+  const values = columns.map(col => columnsAndValues[col]);
 
-    // Build the SELECT statement with needed WHERE conditions
-    const whereClause = columns.map(column => `${column} = ?`).join(' AND ');
-    const query = `SELECT ${keyColumn} FROM ${tableName} WHERE ${whereClause}`;
+  // Build the SELECT statement with needed WHERE conditions
+  const whereClause = columns.map(column => `${column} = ?`).join(' AND ');
+  const query = `SELECT ${keyColumn} FROM ${tableName} WHERE ${whereClause}`;
 
-    const record = await safeGet(db, query, values, `Get ${tableName} key`, columnsAndValues);
-    if (!record || record[keyColumn] === undefined) {
-      throw new Error(
-        `Failed to get ${keyColumn} for ${tableName} with conditions ${JSON.stringify(columnsAndValues)} when ${context}`
-      );
-    }
-    return record[keyColumn];
-  } catch (error: unknown) {
-    console.error(
-      `Error in getKey for ${tableName}:`,
-      error instanceof Error ? error.message : error
+  const record = await safeGet(db, query, values, `Get ${tableName} key`, columnsAndValues);
+  if (!record || record[keyColumn] === undefined) {
+    throw new Error(
+      `Failed to get ${keyColumn} for ${tableName} with conditions ${JSON.stringify(columnsAndValues)} when ${context}`
     );
-    throw error;
   }
+  return record[keyColumn];
 }
 
 // Insert a record, if it is unique, and return its key (or the existing key if it already exists)
@@ -250,30 +237,30 @@ async function insertAndGetKey(
     : getKey(db, tableName, keyColumn, columnsAndValues, context);
 }
 
+// Insert a record that must be new. `insert` uses INSERT OR IGNORE, so a duplicate would
+// otherwise be dropped without any sign that source data was lost.
+async function insertNewAndGetKey(
+  db: Database,
+  tableName: string,
+  columnsAndValues: Record<string, unknown>,
+  description: string
+): Promise<number> {
+  const result = await insert(db, tableName, columnsAndValues);
+  if (!result.changes) throw new Error(`Duplicate ${description}`);
+  return result.lastID;
+}
+
 async function processLexicalReference(filePath: string, db: Database): Promise<void> {
   console.log(`Processing ${filePath}...`);
 
   // Use utf-8 encoding explicitly when reading XML files
   const xml = fs.readFileSync(filePath, 'utf-8');
 
-  // Configure XML parser to properly handle various scripts and encodings
-  const parserOptions = {
-    locator: {},
-    errorHandler: {
-      warning: (msg: string) => console.warn(`XML Warning: ${msg}`),
-      error: (msg: string) => console.error(`XML Error: ${msg}`),
-      fatalError: (msg: string) => {
-        throw new Error(`Fatal XML Error: ${msg}`);
-      },
-    },
-  };
-
-  const doc = new DOMParser(parserOptions).parseFromString(xml, 'text/xml');
+  const doc = parseXmlStrict(xml, filePath);
 
   const lexRef = doc.documentElement;
   if (!lexRef || lexRef.nodeName !== 'LexicalReferenceText') {
-    console.warn(`Skipping ${filePath}: not a valid LexicalReferenceText file`);
-    return;
+    throw new Error(`${filePath} is not a valid LexicalReferenceText file`);
   }
 
   const refTextName = lexRef.getAttribute('Id');
@@ -281,14 +268,12 @@ async function processLexicalReference(filePath: string, db: Database): Promise<
   const dataVersion = lexRef.getAttribute('DataVersion'); // Updated from Version to DataVersion
   const schemaVersion = lexRef.getAttribute('SchemaVersion'); // New attribute
   if (schemaVersion !== '1.0') {
-    console.warn(`Skipping ${filePath}: unsupported schema version ${schemaVersion}`);
-    return;
+    throw new Error(`${filePath} has unsupported schema version ${schemaVersion}`);
   }
   const language = lexRef.getAttribute('Language');
 
   if (!refTextName || !dataVersion || !language) {
-    console.warn(`Skipping ${filePath}: missing required attributes`);
-    return;
+    throw new Error(`${filePath} is missing required attributes (Id, DataVersion or Language)`);
   }
 
   // Start a transaction
@@ -325,12 +310,21 @@ async function processLexicalReference(filePath: string, db: Database): Promise<
     if (entriesElement) {
       const entryElements = entriesElement.getElementsByTagName('Entry');
       const batchSize = 100;
+      const seen: SeenEntries = { ids: new Set(), lemmas: new Set() };
 
       for (let i = 0; i < entryElements.length; i += batchSize) {
         const batch = Array.from(entryElements).slice(i, i + batchSize);
-        await Promise.all(
-          batch.map(entry => processEntry(entry, lexRefKey, languageKey, db, filePath))
+        // Wait for every entry to settle before failing, so no entry is still writing when the
+        // transaction is rolled back.
+        const results = await Promise.allSettled(
+          batch.map(entry => processEntry(entry, lexRefKey, languageKey, db, filePath, seen))
         );
+        const failures = results.filter(
+          (result): result is PromiseRejectedResult => result.status === 'rejected'
+        );
+        // Log the failures after the first, since only the first is thrown (and logged by the caller)
+        for (const failure of failures.slice(1)) console.error('Entry failed:', failure.reason);
+        if (failures.length > 0) throw failures[0].reason;
 
         // Update progress on same line
         const progress = (((i + batch.length) / entryElements.length) * 100).toFixed(1);
@@ -344,10 +338,12 @@ async function processLexicalReference(filePath: string, db: Database): Promise<
     await db.exec('COMMIT');
     console.log(`Successfully processed ${filePath}`);
   } catch (error: unknown) {
-    // Rollback the transaction on error
-    await db.exec('ROLLBACK');
-    console.error(`Error processing ${filePath}:`, error instanceof Error ? error.message : error);
-
+    // Roll back, but never let a failing rollback hide the error that caused it
+    try {
+      await db.exec('ROLLBACK');
+    } catch (rollbackError: unknown) {
+      console.error('Rollback failed:', errorMessage(rollbackError));
+    }
     if (verbose) {
       // Log additional info about the database state
       try {
@@ -361,6 +357,9 @@ async function processLexicalReference(filePath: string, db: Database): Promise<
         console.error('Error getting database state:', err);
       }
     }
+
+    // A file that fails to import fails the whole import
+    throw new Error(`Failed to import ${filePath}: ${errorMessage(error)}`, { cause: error });
   }
 }
 
@@ -373,8 +372,7 @@ async function processTaxonomy(
   const taxonomyTitle = taxonomyElement.getAttribute('Title');
 
   if (!taxonomyId || !taxonomyTitle) {
-    console.warn('Skipping taxonomy: missing required attributes (Id or Title)');
-    return;
+    throw new Error('Taxonomy is missing required attributes (Id or Title)');
   }
 
   try {
@@ -391,9 +389,10 @@ async function processTaxonomy(
     const domains: Array<{ element: Element; parentCode: string | null }> = [];
     const collectDomains = (element: Element, parentCode: string | null) => {
       const code = element.getAttribute('Code');
-      if (code) {
-        domains.push({ element, parentCode });
+      if (!code) {
+        throw new Error(`Taxonomy ${taxonomyId} has a domain without a Code attribute`);
       }
+      domains.push({ element, parentCode });
       const childDomainsElement = element.getElementsByTagName('SubDomains')[0];
       if (childDomainsElement) {
         const children = childDomainsElement.getElementsByTagName('SubDomain');
@@ -445,11 +444,9 @@ async function processTaxonomy(
       }
     }
   } catch (error: unknown) {
-    console.error(
-      `Error processing taxonomy ${taxonomyId} (${taxonomyTitle}):`,
-      error instanceof Error ? error.message : error
-    );
-    throw error;
+    throw new Error(`Taxonomy ${taxonomyId} (${taxonomyTitle}): ${errorMessage(error)}`, {
+      cause: error,
+    });
   }
 }
 
@@ -465,8 +462,7 @@ async function processSubDomain(
   const domainName = subDomainElement.getAttribute('Name');
 
   if (!domainCode) {
-    console.warn('Skipping subdomain: missing required Code attribute');
-    return;
+    throw new Error('Subdomain is missing the required Code attribute');
   }
 
   try {
@@ -516,12 +512,54 @@ async function processSubDomain(
 
     return domainKey;
   } catch (error: unknown) {
-    console.error(
-      `Error processing subdomain ${domainCode}:`,
-      error instanceof Error ? error.message : error
-    );
-    throw error;
+    throw new Error(`Subdomain ${domainCode}: ${errorMessage(error)}`, { cause: error });
   }
+}
+
+// Entry Ids and lemmas already seen in one file, to catch duplicates within the file
+interface SeenEntries {
+  ids: Set<string>;
+  lemmas: Set<string>;
+}
+
+// Entries are shared by every language file of a dictionary: the first file inserts the row and later
+// files must find the same Id with the same lemma. Returns the key of the entry row.
+async function insertOrFindEntry(
+  db: Database,
+  refTextKey: number,
+  entrySourceId: string,
+  lemma: string
+): Promise<number> {
+  const result = await insert(db, 'Entries', {
+    Id: entrySourceId,
+    Lemma: lemma,
+    LexicalReferenceTextKey: refTextKey,
+  });
+  if (result.changes) return result.lastID;
+
+  const byId = await safeGet(
+    db,
+    'SELECT EntryKey, Lemma FROM Entries WHERE Id = ? AND LexicalReferenceTextKey = ?',
+    [entrySourceId, refTextKey],
+    'Get entry by Id'
+  );
+  if (byId) {
+    if (byId.Lemma !== lemma) {
+      throw new Error(
+        `Entry Id ${entrySourceId} has lemma "${lemma}" but an earlier file gave it lemma "${byId.Lemma}"`
+      );
+    }
+    return byId.EntryKey;
+  }
+  const byLemma = await safeGet(
+    db,
+    'SELECT Id FROM Entries WHERE Lemma = ? AND LexicalReferenceTextKey = ?',
+    [lemma, refTextKey],
+    'Get entry by lemma'
+  );
+  throw new Error(
+    `Lemma "${lemma}" of entry Id ${entrySourceId} already belongs to entry Id ${byLemma?.Id}`
+  );
 }
 
 async function processEntry(
@@ -529,24 +567,30 @@ async function processEntry(
   refTextKey: number,
   languageKey: number,
   db: Database,
-  filePath: string
+  filePath: string,
+  seen: SeenEntries
 ): Promise<void> {
   const entrySourceId = entryElement.getAttribute('Id');
   const lemma = entryElement.getAttribute('Lemma');
 
   if (!entrySourceId || !lemma) {
-    console.warn('Skipping entry: missing required attributes');
-    return;
+    throw new Error(
+      `Entry in ${filePath} is missing required attributes (Id or Lemma): Id="${entrySourceId}", Lemma="${lemma}"`
+    );
   }
 
+  // Check and record synchronously, before any await, so concurrent entries cannot interleave
+  if (seen.ids.has(entrySourceId)) {
+    throw new Error(`Duplicate entry Id ${entrySourceId} in ${filePath}`);
+  }
+  if (seen.lemmas.has(lemma)) {
+    throw new Error(`Duplicate lemma "${lemma}" (entry Id ${entrySourceId}) in ${filePath}`);
+  }
+  seen.ids.add(entrySourceId);
+  seen.lemmas.add(lemma);
+
   try {
-    const entryKey = await insertAndGetKey(
-      db,
-      'Entries',
-      'EntryKey',
-      { Id: entrySourceId, Lemma: lemma, LexicalReferenceTextKey: refTextKey },
-      'Get entry key'
-    );
+    const entryKey = await insertOrFindEntry(db, refTextKey, entrySourceId, lemma);
 
     // Process entry-level StrongsCodes if present
     const strongsCodesElement = findChildElementByName(entryElement, 'StrongsCodes');
@@ -596,11 +640,10 @@ async function processEntry(
       }
     }
   } catch (error: unknown) {
-    console.error(
-      `Error processing entry ${entrySourceId} (lemma: ${lemma}) in ${filePath}:`,
-      error instanceof Error ? error.message : error
+    throw new Error(
+      `Entry ${entrySourceId} (lemma: ${lemma}) in ${filePath}: ${errorMessage(error)}`,
+      { cause: error }
     );
-    throw error; // Re-throw to handle at the transaction level
   }
 }
 
@@ -614,8 +657,7 @@ async function processSense(
   const senseSourceId = senseElement.getAttribute('Id');
 
   if (!senseSourceId) {
-    console.warn('Skipping sense: missing required id attribute');
-    return;
+    throw new Error(`Sense of entry ${parentSourceId} is missing the required Id attribute`);
   }
 
   try {
@@ -626,17 +668,16 @@ async function processSense(
       definition = definitionElement.textContent;
     }
 
-    const senseKey = await insertAndGetKey(
+    const senseKey = await insertNewAndGetKey(
       db,
       'Senses',
-      'SenseKey',
       {
         Id: senseSourceId,
         EntryKey: entryKey,
         Definition: definition,
         LanguageKey: languageKey,
       },
-      'Get sense key'
+      `sense Id ${senseSourceId} in entry ${parentSourceId}`
     );
 
     // Process StrongsCodes if present at the sense level
@@ -684,11 +725,9 @@ async function processSense(
       );
     }
   } catch (error: unknown) {
-    console.error(
-      `Error processing sense ${senseSourceId} (for entry: ${parentSourceId}):`,
-      error instanceof Error ? error.message : error
-    );
-    throw error;
+    throw new Error(`Sense ${senseSourceId} (entry ${parentSourceId}): ${errorMessage(error)}`, {
+      cause: error,
+    });
   }
 }
 
@@ -706,8 +745,7 @@ async function processOccurrences(
     const corpusName = corpusElement.getAttribute('Id');
 
     if (!corpusName) {
-      console.warn('Skipping corpus: missing required id attribute');
-      continue;
+      throw new Error(`Occurrences of ${parentSourceId} have a Corpus without an Id attribute`);
     }
 
     try {
@@ -733,33 +771,31 @@ async function processOccurrences(
         const occurrenceElement = occurrenceElements[j];
         const occurrenceType = occurrenceElement.getAttribute('Type');
         if (occurrenceType !== 'U23003') {
-          console.warn('Skipping occurrence: type is not U23003');
-          continue;
+          throw new Error(
+            `Occurrence of ${parentSourceId} has type "${occurrenceType}" instead of U23003`
+          );
         }
 
         const occurrenceValue = occurrenceElement.textContent;
         if (!occurrenceValue) {
-          console.warn('Skipping occurrence: missing text content');
-          continue;
+          throw new Error(`Occurrence of ${parentSourceId} has no text content`);
         }
 
         const parsedReference = parseU23003Reference(occurrenceValue);
         if (!parsedReference) {
-          console.warn(`Skipping malformed occurrence value: ${occurrenceValue}`);
-          continue;
+          throw new Error(`Occurrence of ${parentSourceId} is malformed: ${occurrenceValue}`);
         }
 
         const { bookNum, chapterNum, verseNum, wordNum } = parsedReference;
 
-        // Skip if any of the values are undefined
+        // Fail if any of the values are undefined
         if (
           bookNum === undefined ||
           chapterNum === undefined ||
           verseNum === undefined ||
           wordNum === undefined
         ) {
-          console.warn(`Skipping malformed occurrence value: ${occurrenceValue}`);
-          continue;
+          throw new Error(`Occurrence of ${parentSourceId} is malformed: ${occurrenceValue}`);
         }
 
         occurrenceValues.push([itemKey, corpusKey, bookNum, chapterNum, verseNum, wordNum]);
@@ -775,11 +811,9 @@ async function processOccurrences(
         );
       }
     } catch (error: unknown) {
-      console.error(
-        `Error processing corpus ${corpusName} for ${parentSourceId}:`,
-        error instanceof Error ? error.message : error
-      );
-      throw error;
+      throw new Error(`Corpus ${corpusName} of ${parentSourceId}: ${errorMessage(error)}`, {
+        cause: error,
+      });
     }
   }
 }
@@ -800,8 +834,9 @@ async function processDomains(
     const domainCode = domainElement.getAttribute('Code');
 
     if (!taxonomyName || !domainCode) {
-      console.warn('Skipping domain: missing required attributes');
-      continue;
+      throw new Error(
+        `Domain of ${parentSourceId} is missing required attributes (Taxonomy or Code): Taxonomy="${taxonomyName}", Code="${domainCode}"`
+      );
     }
 
     try {
@@ -825,17 +860,18 @@ async function processDomains(
         DomainCode: domainCode,
       });
     } catch (error: unknown) {
-      console.error(
-        `Error processing domain ${taxonomyName}:${domainCode} for ${parentSourceId}:`,
-        error instanceof Error ? error.message : error
+      throw new Error(
+        `Domain ${taxonomyName}:${domainCode} of ${parentSourceId}: ${errorMessage(error)}`,
+        { cause: error }
       );
-      throw error;
     }
   }
 }
 
-async function processDirectory(dirPath: string, db: Database): Promise<void> {
+/** Imports every .xml file under the directory and returns how many there were */
+async function processDirectory(dirPath: string, db: Database): Promise<number> {
   const files = fs.readdirSync(dirPath);
+  let fileCount = 0;
 
   for (const file of files) {
     const filePath = path.join(dirPath, file);
@@ -843,12 +879,14 @@ async function processDirectory(dirPath: string, db: Database): Promise<void> {
 
     if (stat.isDirectory()) {
       // Recursively process subdirectories
-      await processDirectory(filePath, db);
+      fileCount += await processDirectory(filePath, db);
     } else if (file.endsWith('.xml')) {
       // Process XML files
       await processLexicalReference(filePath, db);
+      fileCount++;
     }
   }
+  return fileCount;
 }
 
 // Add database optimization function
@@ -865,25 +903,53 @@ async function optimizeDatabase(db: Database): Promise<void> {
 }
 
 async function main() {
-  console.log(`Initializing database at ${options.output}...`);
-  const db = await initializeDatabase(options.output, options.schema);
+  console.log(`Building ${options.output} via ${tempOutput}...`);
+  let db: Database | undefined;
+  let builtDatabaseComplete = false;
 
   try {
+    db = await initializeDatabase(tempOutput, options.schema);
+    let fileCount = 0;
     for (const inputDir of options.input) {
       console.log(`Processing directory: ${inputDir}`);
-      await processDirectory(inputDir, db);
+      fileCount += await processDirectory(inputDir, db);
+    }
+
+    // An input with nothing to import is a mistake (a wrong path, say), and must not replace a good
+    // database with an empty one
+    if (fileCount === 0) {
+      throw new Error(`No .xml files found in ${options.input.join(', ')}`);
+    }
+    const entryCount = (await db.get('SELECT COUNT(*) AS count FROM Entries')).count;
+    if (entryCount === 0) {
+      throw new Error(
+        `The ${fileCount} .xml file(s) in ${options.input.join(', ')} hold no entries`
+      );
     }
 
     // Call our optimization function
     await optimizeDatabase(db);
 
     await db.close();
+    db = undefined;
+    builtDatabaseComplete = true;
+    fs.renameSync(tempOutput, options.output);
     console.log('Import completed successfully!');
   } catch (error: unknown) {
-    console.error('Error during import:', error instanceof Error ? error.message : error);
-    await db.close();
+    console.error('Error during import:', errorReport(error));
+    await db?.close().catch(() => undefined);
+    if (builtDatabaseComplete) {
+      // The database was fully built; only moving it into place failed, so keep it.
+      console.error(`The finished database was kept at ${tempOutput}`);
+    } else {
+      fs.rmSync(tempOutput, { force: true });
+    }
     process.exit(1);
   }
 }
 
-main();
+main().catch((error: unknown) => {
+  console.error('Error during import:', errorReport(error));
+  fs.rmSync(tempOutput, { force: true });
+  process.exit(1);
+});

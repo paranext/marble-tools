@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS Languages (
 
 -- Table for senses (meanings of entries)
 CREATE TABLE IF NOT EXISTS Senses (
+  -- Ascending SenseKey is the display order: the Dictionary panel orders by it, and the "(n)" numbers in
+  -- definitions assume it
   SenseKey INTEGER PRIMARY KEY,
   EntryKey INTEGER NOT NULL,
   LanguageKey INTEGER NOT NULL,
